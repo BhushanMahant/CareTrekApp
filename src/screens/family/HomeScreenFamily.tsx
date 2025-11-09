@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, 
   Text, 
@@ -10,28 +10,19 @@ import {
   RefreshControl,
   ActivityIndicator,
   Image,
-  Dimensions
+  Dimensions,
+  Platform
 } from 'react-native';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation, useIsFocused, useTheme as useNavTheme } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../../contexts/theme/ThemeContext';
 import { useTranslation } from '../../contexts/translation/TranslationContext';
 import { Ionicons, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useCachedTranslation } from '../../hooks/useCachedTranslation';
+import { getSeniors, saveSeniors, clearAllSeniors } from '../../utils/seniorStorage';
+import type { SeniorData } from '../../utils/seniorStorage';
 
-const { width } = Dimensions.get('window');
-
-type SeniorMember = {
-  id: string;
-  name: string;
-  status: 'online' | 'offline' | 'alert';
-  lastActive: string;
-  heartRate?: number;
-  oxygen?: number;
-  battery?: number;
-  location?: string;
-  avatar?: string;
-};
 
 type QuickAction = {
   id: string;
@@ -43,120 +34,172 @@ type QuickAction = {
 };
 
 type RootStackParamList = {
-  SeniorDetail: { seniorId: string };
-  Messages: { seniorId: string };
-  Alerts: { seniorId: string };
+  SeniorDetail: { 
+    seniorId: string;
+    seniorName: string;
+    status: 'online' | 'offline' | 'alert';
+  };
+  Messages: { seniorId?: string };
+  Alerts: { seniorId?: string };
   Settings: undefined;
-  ConnectSenior: undefined;
-  TrackSenior: { seniorId: string };
   HealthHistory: { seniorId: string };
+  TrackSenior: { seniorId: string };
   SOSContacts: undefined;
-  [key: string]: undefined | object;
+  ConnectSenior: undefined;
+  Home: undefined;
+  MainTabs: undefined;
 };
 
-type HomeScreenFamilyNavigationProp = StackNavigationProp<RootStackParamList>;
+const { width } = Dimensions.get('window');
+
+
+export type HomeScreenFamilyNavigationProp = StackNavigationProp<RootStackParamList>;
+
 
 const HomeScreenFamily = () => {
   const navigation = useNavigation<HomeScreenFamilyNavigationProp>();
+  const isFocused = useIsFocused();
   const { colors, isDark } = useTheme();
-  const { currentLanguage } = useTranslation();
+  const { t } = useTranslation();
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState('Home');
+  const [seniorMembers, setSeniorMembers] = useState<SeniorData[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   
-  // Translations
-  const { translatedText: welcomeText } = useCachedTranslation('Welcome back', currentLanguage);
-  const { translatedText: trackText } = useCachedTranslation('Track Location', currentLanguage);
-  const { translatedText: healthText } = useCachedTranslation('Health', currentLanguage);
-  const { translatedText: messagesText } = useCachedTranslation('Messages', currentLanguage);
-  const { translatedText: alertsText } = useCachedTranslation('Alerts', currentLanguage);
-  const { translatedText: sosText } = useCachedTranslation('SOS', currentLanguage);
-  const { translatedText: quickActionsText } = useCachedTranslation('Quick Actions', currentLanguage);
-  const { translatedText: connectedSeniorsText } = useCachedTranslation('Connected Seniors', currentLanguage);
-  const { translatedText: seeAllText } = useCachedTranslation('See All', currentLanguage);
-  const { translatedText: familyDashboardText } = useCachedTranslation('Family Dashboard', currentLanguage);
-
-  const handleBack = () => {
-    navigation.goBack();
+  // Clear all senior data on initial load (for development/testing)
+  // Remove or comment this out in production
+  useEffect(() => {
+    const clearData = async () => {
+      try {
+        await clearAllSeniors();
+        console.log('Cleared all senior data');
+      } catch (error) {
+        console.error('Error clearing senior data:', error);
+      }
+    };
+    
+    clearData();
+  }, []);
+  
+  // Load connected seniors from storage
+  const loadSeniors = useCallback(async () => {
+    try {
+      const savedSeniors = await getSeniors();
+      
+      // If no seniors in storage, use sample data (first time setup)
+      if (savedSeniors.length === 0) {
+        const sampleSeniors: SeniorData[] = [
+          {
+            id: '1',
+            name: 'John Smith',
+            seniorId: 'ABC123',
+            status: 'online',
+            lastActive: 'Active now',
+            heartRate: 72,
+            oxygen: 98,
+            battery: 85,
+            location: 'Living Room',
+            avatar: 'https://randomuser.me/api/portraits/men/1.jpg',
+          },
+          {
+            id: '2',
+            name: 'Sarah Johnson',
+            seniorId: 'DEF456',
+            status: 'offline',
+            lastActive: '2 hours ago',
+            heartRate: 68,
+            oxygen: 97,
+            battery: 45,
+            location: 'Bedroom',
+            avatar: 'https://randomuser.me/api/portraits/women/1.jpg',
+          },
+        ];
+        
+        // Save sample data to storage
+        await saveSeniors(sampleSeniors);
+        setSeniorMembers(sampleSeniors);
+      } else {
+        setSeniorMembers(savedSeniors);
+      }
+    } catch (error) {
+      console.error('Error loading seniors:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+  
+  // Load data when screen comes into focus
+  useEffect(() => {
+    if (isFocused) {
+      loadSeniors();
+    }
+  }, [isFocused, loadSeniors]);
+  
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    loadSeniors().finally(() => {
+      setRefreshing(false);
+    });
+  }, [loadSeniors]);
+  
+  // Get translations
+  const translations = {
+    welcome: t('Welcome back') || 'Welcome back!',
+    track: t('Track Location') || 'Track Location',
+    health: t('Health') || 'Health',
+    messages: t('Messages') || 'Messages',
+    alerts: t('Alerts') || 'Alerts',
+    sos: t('SOS') || 'SOS',
+    quickActions: t('Quick Actions') || 'Quick Actions',
+    connectedSeniors: t('Connected Seniors') || 'Connected Seniors',
+    seeAll: t('See All') || 'See All',
+    familyDashboard: t('Family Dashboard') || 'Family Dashboard',
+    connectSenior: t('connectSenior.connectSenior') || 'Connect Senior',
+    checkOnLovedOnes: t('Check on your loved ones') || 'Check on your loved ones'
   };
 
-  // Quick Actions with updated colors to match theme
+  // Handle back button press
+  const handleBack = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('MainTabs');
+    }
+  };
+
+  // Handle navigation to different screens
+  const navigateToScreen = <T extends keyof RootStackParamList>(
+    screen: T,
+    params?: RootStackParamList[T] extends undefined ? undefined : RootStackParamList[T]
+  ) => {
+    // @ts-ignore - Workaround for navigation type issues
+    navigation.navigate(screen, params);
+  };
+
+  // Refresh data when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      onRefresh();
+      console.log('Home screen focused');
+      return () => {};
+    }, [onRefresh])
+  );
+
   const quickActions: QuickAction[] = [
-    {
-      id: '1',
-      icon: 'map-marker-radius',
-      title: trackText,
-      screen: 'TrackSenior',
-      color: isDark ? '#63B3ED' : '#2B6CB0',
-      bgColor: isDark ? '#2C5282' : '#BEE3F8',
-    },
-    {
-      id: '2',
-      icon: 'heart-pulse',
-      title: healthText,
-      screen: 'HealthHistory',
-      color: isDark ? '#68D391' : '#2F855A',
-      bgColor: isDark ? '#22543D' : '#C6F6D5',
-    },
-    {
-      id: '3',
-      icon: 'message-text',
-      title: messagesText,
-      screen: 'Messages',
-      color: isDark ? '#B794F4' : '#6B46C1',
-      bgColor: isDark ? '#44337A' : '#E9D8FD',
-    },
-    {
-      id: '4',
-      icon: 'bell-alert',
-      title: alertsText,
-      screen: 'Alerts',
-      color: isDark ? '#FC8181' : '#C53030',
-      bgColor: isDark ? '#742A2A' : '#FED7D7',
-    },
+    { id: '1', icon: 'heart-pulse', title: 'Health', screen: 'HealthHistory', color: '#E53E3E', bgColor: '#FED7D7' },
+    { id: '2', icon: 'map-marker', title: 'Track', screen: 'TrackSenior', color: '#3182CE', bgColor: '#BEE3F8' },
+    { id: '3', icon: 'message-text', title: 'Messages', screen: 'Messages', color: '#38A169', bgColor: '#C6F6D5' },
+    { id: '4', icon: 'bell-alert', title: 'Alerts', screen: 'Alerts', color: '#DD6B20', bgColor: '#FEEBCF' },
   ];
-
-  const seniorMembers: SeniorMember[] = [
-    {
-      id: '1',
-      name: 'Ramesh Patel',
-      status: 'online',
-      lastActive: '2 min ago',
-      heartRate: 72,
-      oxygen: 98,
-      battery: 85,
-      location: 'Home',
-      avatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-    },
-    {
-      id: '2',
-      name: 'Meena Sharma',
-      status: 'alert',
-      lastActive: '15 min ago',
-      heartRate: 92,
-      oxygen: 94,
-      battery: 42,
-      location: 'Park',
-      avatar: 'https://randomuser.me/api/portraits/women/1.jpg',
-    },
-  ];
-
-  const onRefresh = React.useCallback(() => {
-    setRefreshing(true);
-    // Simulate data refresh
-    setTimeout(() => setRefreshing(false), 1000);
-  }, []);
 
   const renderQuickAction = ({ item }: { item: QuickAction }) => (
     <TouchableOpacity
       style={[styles.quickAction, { backgroundColor: isDark ? '#2D3748' : '#FFFFFF' }]}
-      onPress={() => navigation.navigate(item.screen as any, { seniorId: '1' })}
+      onPress={() => navigateToScreen(item.screen as keyof RootStackParamList, { seniorId: '1' })}
     >
       <View style={[styles.iconContainer, { backgroundColor: item.bgColor }]}>
-        <MaterialCommunityIcons 
-          name={item.icon} 
-          size={24} 
-          color={item.color} 
-        />
+        <MaterialCommunityIcons name={item.icon} size={24} color={item.color} />
       </View>
       <Text style={[styles.quickActionText, { color: isDark ? '#E2E8F0' : '#2D3748' }]}>
         {item.title}
@@ -164,10 +207,14 @@ const HomeScreenFamily = () => {
     </TouchableOpacity>
   );
 
-  const renderSeniorCard = ({ item }: { item: SeniorMember }) => (
+  const renderSeniorCard = ({ item }: { item: SeniorData }) => (
     <TouchableOpacity
       style={[styles.seniorCard, { backgroundColor: isDark ? '#2D3748' : '#FFFFFF' }]}
-      onPress={() => navigation.navigate('SeniorDetail', { seniorId: item.id })}
+      onPress={() => navigateToScreen('SeniorDetail', { 
+        seniorId: item.id,
+        seniorName: item.name,
+        status: item.status
+      })}
     >
       <View style={styles.seniorHeader}>
         {item.avatar ? (
@@ -178,35 +225,21 @@ const HomeScreenFamily = () => {
           </View>
         )}
         <View style={styles.seniorInfo}>
-          <View style={styles.seniorHeaderText}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Text style={[styles.seniorName, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
               {item.name}
             </Text>
-            <View style={[styles.statusBadge, { 
-              backgroundColor: item.status === 'online' 
-                ? (isDark ? '#2F855A' : '#C6F6D5') 
-                : item.status === 'alert'
-                  ? (isDark ? '#C53030' : '#FED7D7')
-                  : (isDark ? '#4A5568' : '#E2E8F0')
-            }]}>
-              <View style={[styles.statusDot, { 
-                backgroundColor: item.status === 'online' 
-                  ? '#38A169' 
-                  : item.status === 'alert' 
-                    ? '#E53E3E' 
-                    : '#A0AEC0' 
-              }]} />
-              <Text style={[styles.statusText, { 
-                color: item.status === 'online' 
-                  ? (isDark ? '#9AE6B4' : '#2F855A')
-                  : item.status === 'alert'
-                    ? (isDark ? '#FEB2B2' : '#C53030')
-                    : (isDark ? '#A0AEC0' : '#4A5568')
-              }]}>
-                {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
-              </Text>
-            </View>
+            <View style={[
+              styles.statusDot, 
+              { 
+                backgroundColor: item.status === 'online' ? '#48BB78' : 
+                                item.status === 'alert' ? '#E53E3E' : '#A0AEC0' 
+              }
+            ]} />
           </View>
+          <Text style={[styles.seniorId, { color: isDark ? '#A0AEC0' : '#718096' }]}>
+            ID: {item.seniorId}
+          </Text>
           <Text style={[styles.lastSeen, { color: isDark ? '#A0AEC0' : '#718096' }]}>
             {item.lastActive}
           </Text>
@@ -225,138 +258,144 @@ const HomeScreenFamily = () => {
             {item.oxygen}% <Text style={styles.metricUnit}>SpO₂</Text>
           </Text>
         </View>
-        <View style={styles.metric}>
-          <Ionicons 
-            name="battery-charging" 
-            size={16} 
-            color={item.battery && item.battery < 20 ? '#E53E3E' : '#38A169'} 
-          />
-          <Text style={[
-            styles.metricText, 
-            { 
-              color: item.battery && item.battery < 20 
-                ? '#E53E3E' 
-                : (isDark ? '#E2E8F0' : '#2D3748')
-            }
-          ]}>
-            {item.battery}%
-          </Text>
-        </View>
       </View>
     </TouchableOpacity>
   );
 
-  if (loading) {
-    return (
-      <View style={[styles.loadingContainer, { backgroundColor: isDark ? '#171923' : '#FFFBEF' }]}>
-        <ActivityIndicator size="large" color={isDark ? '#48BB78' : '#2F855A'} />
-      </View>
-    );
-  }
+  const renderEmptyState = () => (
+    <View style={styles.emptyState}>
+      <Ionicons name="people" size={64} color={isDark ? '#4A5568' : '#CBD5E0'} />
+      <Text style={[styles.emptyStateText, { color: isDark ? '#A0AEC0' : '#718096' }]}>
+        {t('No connected seniors yet')}
+      </Text>
+      <Text style={[styles.emptyStateSubtext, { color: isDark ? '#718096' : '#A0AEC0' }]}>
+        {t('Tap the + button to add a senior')}
+      </Text>
+    </View>
+  );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#171923' : '#FFFBEF' }]}>
-      {/* Header with Back Button */}
-      <View style={[styles.header, { backgroundColor: isDark ? '#1A202C' : '#FFFFFF' }]}>
-        <View style={styles.headerContent}>
-          <TouchableOpacity 
-            onPress={handleBack}
-            style={styles.backButton}
-            activeOpacity={0.7}
-          >
+      <View style={styles.contentContainer}>
+        {/* Header with back button and title */}
+        <View style={[styles.header, { backgroundColor: isDark ? '#1A202C' : '#FFFFFF' }]}>
+          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
             <Ionicons 
               name="arrow-back" 
               size={24} 
-              color={isDark ? '#E2E8F0' : '#2D3748'} 
+              color={isDark ? '#E2E8F0' : '#1A202C'} 
             />
-            <Text style={[styles.backButtonText, { color: isDark ? '#E2E8F0' : '#2D3748' }]}>
-              Back
-            </Text>
           </TouchableOpacity>
-          
           <Text style={[styles.headerTitle, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-            {familyDashboardText || 'Family Dashboard'}
+            {translations.familyDashboard}
           </Text>
-          
           <TouchableOpacity
-            onPress={() => navigation.navigate('Settings')}
             style={styles.settingsButton}
+            onPress={() => navigation.navigate('Settings')}
           >
             <Ionicons 
               name="settings-outline" 
               size={24} 
-              color={isDark ? '#A0AEC0' : '#4A5568'} 
+              color={isDark ? '#E2E8F0' : '#1A202C'} 
             />
           </TouchableOpacity>
         </View>
-      </View>
 
-      <ScrollView
-        refreshControl={
-          <RefreshControl 
-            refreshing={refreshing} 
-            onRefresh={onRefresh}
-            colors={[isDark ? '#48BB78' : '#2F855A']}
-            tintColor={isDark ? '#48BB78' : '#2F855A'}
-          />
-        }
-        style={styles.scrollView}
-      >
-        {/* Welcome Section */}
-        <View style={[styles.welcomeCard, { backgroundColor: isDark ? '#2D3748' : '#FFFFFF' }]}>
-          <View>
-            <Text style={[styles.welcomeText, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-              {welcomeText || 'Welcome back!'}
-            </Text>
-            <Text style={[styles.subtitle, { color: isDark ? '#A0AEC0' : '#4A5568' }]}>
-              Check on your loved ones
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.sosButton, { backgroundColor: isDark ? '#E53E3E' : '#F56565' }]}
-            onPress={() => navigation.navigate('SOSContacts')}
-          >
-            <Ionicons name="alert-circle" size={28} color="white" />
-            <Text style={styles.sosButtonText}>{sosText || 'SOS'}</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Quick Actions */}
-        <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-            {quickActionsText || 'Quick Actions'}
-          </Text>
-          <View style={styles.quickActionsGrid}>
-            {quickActions.map((action) => (
-              <View key={action.id} style={styles.quickActionWrapper}>
-                {renderQuickAction({ item: action })}
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* Connected Seniors */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-              {connectedSeniorsText || 'Connected Seniors'}
-            </Text>
-            <TouchableOpacity>
-              <Text style={[styles.seeAll, { color: isDark ? '#48BB78' : '#2F855A' }]}>
-                {seeAllText || 'See All'}
+        <ScrollView
+          refreshControl={
+            <RefreshControl 
+              refreshing={refreshing} 
+              onRefresh={onRefresh}
+              colors={[isDark ? '#48BB78' : '#2F855A']}
+              tintColor={isDark ? '#48BB78' : '#2F855A'}
+            />
+          }
+          style={styles.scrollView}
+        >
+          {/* Welcome Section */}
+          <View style={[styles.welcomeCard, { backgroundColor: isDark ? '#2D3748' : '#FFFFFF' }]}>
+            <View>
+              <Text style={[styles.welcomeText, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
+                {translations.welcome}
               </Text>
+              <Text style={[styles.subtitle, { color: isDark ? '#A0AEC0' : '#4A5568' }]}>
+                {translations.checkOnLovedOnes}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.sosButton, { backgroundColor: isDark ? '#E53E3E' : '#F56565' }]}
+              onPress={() => console.log('SOS Pressed')}
+            >
+              <Ionicons name="alert-circle" size={28} color="white" />
+              <Text style={styles.sosButtonText}>{translations.sos}</Text>
             </TouchableOpacity>
           </View>
-          <FlatList
-            data={seniorMembers}
-            renderItem={renderSeniorCard}
-            keyExtractor={(item) => item.id}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.seniorList}
-          />
-        </View>
-      </ScrollView>
+
+          {/* Quick Actions */}
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
+              {translations.quickActions}
+            </Text>
+            <View style={styles.quickActionsGrid}>
+              {quickActions.map((action) => (
+                <View key={action.id} style={styles.quickActionWrapper}>
+                  <TouchableOpacity
+                    style={[styles.quickAction, { backgroundColor: isDark ? '#2D3748' : '#FFFFFF' }]}
+                    onPress={() => navigateToScreen(action.screen as keyof RootStackParamList, { seniorId: '1' })}
+                  >
+                    <View style={[styles.iconContainer, { backgroundColor: action.bgColor }]}>
+                      <MaterialCommunityIcons name={action.icon} size={24} color={action.color} />
+                    </View>
+                    <Text style={[styles.quickActionText, { color: isDark ? '#E2E8F0' : '#2D3748' }]}>
+                      {action.title}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          </View>
+
+          {/* Connected Seniors */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
+                {translations.connectedSeniors}
+              </Text>
+              {seniorMembers.length > 0 && (
+                <TouchableOpacity onPress={() => navigateToScreen('ConnectSenior')}>
+                  <Text style={[styles.seeAll, { color: colors.primary }]}>
+                    {translations.seeAll}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            
+            {isLoading ? (
+              <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
+            ) : seniorMembers.length > 0 ? (
+              <FlatList
+                data={seniorMembers}
+                renderItem={renderSeniorCard}
+                keyExtractor={(item) => item.id}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.seniorList}
+              />
+            ) : (
+              renderEmptyState()
+            )}
+          </View>
+
+          {/* Add Senior Button */}
+          <TouchableOpacity 
+            style={[styles.addButton, { backgroundColor: colors.primary }]}
+            onPress={() => navigateToScreen('ConnectSenior')}
+          >
+            <Ionicons name="add" size={24} color="#FFFFFF" />
+            <Text style={styles.addButtonText}>{t('Add Senior')}</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
     </SafeAreaView>
   );
 };
@@ -365,43 +404,84 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  header: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.05)',
+  // Loading indicator
+  loader: {
+    padding: 32,
   },
-  headerContent: {
+  // Empty state styles
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    width: '100%',
+  },
+  emptyStateText: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  emptyStateSubtext: {
+    fontSize: 14,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  // Add button
+  addButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+    borderRadius: 8,
+    margin: 16,
+    marginBottom: 8,
+  },
+  addButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  // Status dot
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  // Senior ID text
+  seniorId: {
+    fontSize: 12,
+    marginTop: 2,
+    color: '#718096',
+  },
+  contentContainer: {
+    flex: 1,
+    paddingBottom: 0,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    position: 'relative',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.1)',
   },
   backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    position: 'absolute',
-    left: 0,
-    zIndex: 1,
     padding: 8,
+    marginLeft: -8,
   },
-  backButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    marginLeft: 4,
+  settingsButton: {
+    padding: 8,
+    marginRight: -8,
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '600',
-    flex: 1,
     textAlign: 'center',
-    marginHorizontal: 40, // Add space for back button and settings
-  },
-  settingsButton: {
-    padding: 8,
-    marginLeft: 'auto',
-  },
-  scrollView: {
-    flex: 1,
   },
   welcomeCard: {
     flexDirection: 'row',
@@ -431,21 +511,11 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 16,
     borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 3,
   },
   sosButtonText: {
     color: 'white',
     fontWeight: '600',
     marginLeft: 6,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   section: {
     marginTop: 8,
@@ -500,8 +570,39 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'center',
   },
+  seniorListContainer: {
+    minHeight: 200, // Ensure there's enough space for the cards
+  },
   seniorList: {
     paddingBottom: 4,
+    paddingRight: 16,
+  },
+  addSeniorCard: {
+    width: 160,
+    height: 200,
+    borderRadius: 16,
+    padding: 16,
+    marginRight: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  addSeniorIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  addSeniorText: {
+    fontSize: 16,
+    fontWeight: '500',
+    textAlign: 'center',
   },
   seniorCard: {
     width: 280,
@@ -531,34 +632,10 @@ const styles = StyleSheet.create({
   seniorInfo: {
     flex: 1,
   },
-  seniorHeaderText: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
   seniorName: {
     fontSize: 16,
     fontWeight: '600',
-    flex: 1,
-    marginRight: 8,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 4,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '500',
+    marginBottom: 4,
   },
   lastSeen: {
     fontSize: 12,

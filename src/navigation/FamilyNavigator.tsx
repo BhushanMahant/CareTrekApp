@@ -1,9 +1,22 @@
-import React from 'react';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { createStackNavigator } from '@react-navigation/stack';
+import React, { useEffect, useRef } from 'react';
+import { 
+  createBottomTabNavigator,
+  BottomTabNavigationProp,
+  BottomTabBarButtonProps
+} from '@react-navigation/bottom-tabs';
+import { 
+  createStackNavigator, 
+  StackNavigationProp,
+  CommonActions
+} from '@react-navigation/stack';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../contexts/theme/ThemeContext';
 import { useTranslation } from 'react-i18next';
+import { 
+  NavigationContainerRef, 
+  TouchableOpacity,
+  TouchableOpacityProps
+} from 'react-native';
 
 // Import all family screens
 import HomeScreenFamily from '../screens/family/HomeScreenFamily';
@@ -48,6 +61,36 @@ export type FamilyStackParamList = {
 const Tab = createBottomTabNavigator<FamilyTabParamList>();
 const Stack = createStackNavigator<FamilyStackParamList>();
 
+// Create a navigation reference for programmatic navigation
+export const navigationRef = React.createRef<NavigationContainerRef<FamilyStackParamList>>();
+
+// Helper function to navigate to any screen
+export function navigate(name: keyof FamilyStackParamList, params?: any) {
+  navigationRef.current?.navigate(name as any, params);
+}
+
+// Custom tab bar button with press handling
+const TabBarButton: React.FC<TouchableOpacityProps & BottomTabBarButtonProps> = ({
+  children,
+  onPress,
+  ...props
+}) => {
+  return (
+    <TouchableOpacity
+      {...props}
+      activeOpacity={0.7}
+      onPress={onPress}
+      style={{
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
+      {children}
+    </TouchableOpacity>
+  );
+};
+
 // Tab Navigator for the main family screens
 const TabNavigator = () => {
   const { isDark } = useTheme();
@@ -59,6 +102,24 @@ const TabNavigator = () => {
   const alertsText = t('Alerts') || 'Alerts';
   const messagesText = t('Messages') || 'Messages';
   const settingsText = t('Settings') || 'Settings';
+
+  // Handle deep linking and automatic navigation
+  useEffect(() => {
+    // This would be connected to your deep linking or notification handlers
+    // Example: Subscribe to notification events and navigate accordingly
+    const handleNotification = (data: any) => {
+      if (data?.type === 'alert') {
+        tabBarRef.current?.navigate('Alerts');
+      } else if (data?.type === 'message') {
+        tabBarRef.current?.navigate('Messages');
+      }
+    };
+
+    // Cleanup
+    return () => {
+      // Unsubscribe from any listeners
+    };
+  }, []);
 
   return (
     <Tab.Navigator
@@ -104,32 +165,134 @@ const TabNavigator = () => {
       <Tab.Screen 
         name="Home" 
         component={HomeScreenFamily} 
-        options={{ title: homeText }}
+        options={{
+          title: homeText,
+          tabBarAccessibilityLabel: homeText,
+          tabBarButton: (props) => (
+            <TabBarButton
+              {...props}
+              onPress={() => {
+                // Reset stack when pressing the active tab
+                if (props.accessibilityState?.selected) {
+                  // Reset to first screen in the stack
+                  props.navigation.dispatch(
+                    CommonActions.reset({
+                      index: 0,
+                      routes: [{ name: 'Home' }],
+                    })
+                  );
+                } else {
+                  props.onPress?.();
+                }
+              }}
+            />
+          ),
+        }}
       />
       <Tab.Screen 
         name="Seniors" 
         component={SeniorsListScreen} 
-        options={{ title: seniorsText }}
+        options={{
+          title: seniorsText,
+          tabBarAccessibilityLabel: seniorsText,
+          tabBarButton: (props) => (
+            <TabBarButton
+              {...props}
+              onPress={() => {
+                if (props.accessibilityState?.selected) {
+                  props.navigation.dispatch(
+                    CommonActions.reset({
+                      index: 0,
+                      routes: [{ name: 'Seniors' }],
+                    })
+                  );
+                } else {
+                  props.onPress?.();
+                }
+              }}
+            />
+          ),
+        }}
       />
       <Tab.Screen 
         name="Alerts" 
         component={AlertsScreen} 
-        options={{ title: alertsText }}
+        options={{
+          title: alertsText,
+          tabBarAccessibilityLabel: alertsText,
+          tabBarBadge: undefined, // Set to actual unread count when available
+          tabBarButton: (props) => (
+            <TabBarButton
+              {...props}
+              onPress={() => {
+                if (props.accessibilityState?.selected) {
+                  props.navigation.dispatch(
+                    CommonActions.reset({
+                      index: 0,
+                      routes: [{ name: 'Alerts' }],
+                    })
+                  );
+                } else {
+                  props.onPress?.();
+                }
+              }}
+            />
+          ),
+        }}
       />
       <Tab.Screen 
         name="Messages" 
         component={MessagesScreen} 
-        options={{ 
+        options={{
           title: messagesText,
+          tabBarAccessibilityLabel: messagesText,
           tabBarLabelStyle: {
             fontSize: 10,
           },
+          tabBarBadge: undefined, // Set to actual unread count when available
+          tabBarButton: (props) => (
+            <TabBarButton
+              {...props}
+              onPress={() => {
+                if (props.accessibilityState?.selected) {
+                  props.navigation.dispatch(
+                    CommonActions.reset({
+                      index: 0,
+                      routes: [{ name: 'Messages' }],
+                    })
+                  );
+                } else {
+                  props.onPress?.();
+                }
+              }}
+            />
+          ),
         }}
       />
       <Tab.Screen 
         name="Settings" 
         component={FamilySettingsScreen} 
-        options={{ title: settingsText }}
+        options={{
+          title: settingsText,
+          tabBarAccessibilityLabel: settingsText,
+          tabBarButton: (props) => (
+            <TabBarButton
+              {...props}
+              onPress={() => {
+                if (props.accessibilityState?.selected) {
+                  props.navigation.dispatch(
+                    CommonActions.reset({
+                      index: 0,
+                      routes: [{ name: 'Settings' }],
+                    })
+                  );
+                } else {
+                  props.onPress?.();
+                }
+              }}
+            />
+          ),
+        }}
       />
     </Tab.Navigator>
   );
