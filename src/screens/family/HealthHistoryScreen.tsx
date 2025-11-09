@@ -1,42 +1,75 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
+  StyleSheet,
   TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-  RefreshControl,
-  SafeAreaView,
   FlatList,
+  RefreshControl,
+  ActivityIndicator,
+  SafeAreaView,
   Modal,
+  Alert,
+  useWindowDimensions,
   Platform,
 } from 'react-native';
-import { useTheme } from '../../contexts/theme/ThemeContext';
-import { useTranslation } from 'react-i18next';
-import { MaterialIcons, Ionicons } from '@expo/vector-icons';
+import { LineChart } from 'react-native-chart-kit';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
+import { MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useTheme } from '../../contexts/theme/ThemeContext';
+import { useTranslation } from 'react-i18next';
 
 // Extend dayjs with relativeTime plugin
 dayjs.extend(relativeTime);
+
+/* --------- Types --------- */
+interface HealthMetric {
+  value: number | string;
+  unit: string;
+  trend?: 'up' | 'down' | 'stable';
+  lastUpdated: Date;
+}
+
+interface BloodPressure {
+  systolic: number;
+  diastolic: number;
+  lastUpdated: Date;
+}
+
+interface SleepData {
+  duration: number;
+  quality: number;
+  lastUpdated: Date;
+}
+
+type RecordType = 'appointment' | 'medication' | 'symptom' | 'other' | 'activity' | 'vital';
 
 interface HealthRecord {
   id: string;
   date: Date;
   title: string;
-  description: string;
-  type: 'appointment' | 'medication' | 'symptom' | 'other';
+  description?: string;
+  type: RecordType;
   severity?: 'low' | 'medium' | 'high';
   doctor?: string;
   location?: string;
   notes?: string;
+  icon?: string;
+  value?: string;
+  unit?: string;
 }
 
 interface HealthData {
+  heartRate: HealthMetric;
+  bloodOxygen: HealthMetric;
+  bloodPressure: BloodPressure;
+  steps: HealthMetric;
+  calories: HealthMetric;
+  sleep: SleepData;
+  lastSync: Date;
   records: HealthRecord[];
-  lastUpdated: Date;
 }
 
 type HealthHistoryScreenProps = {
@@ -47,16 +80,15 @@ type HealthHistoryScreenProps = {
   };
 };
 
-const isHex = (s: string) => /^#([A-Fa-f0-9]{3,8})$/.test(s?.trim?.() ?? '');
-const isRgb = (s: string) => /^rgba?\(/i.test(s?.trim?.() ?? '');
-const isColorName = (s: string) => /^[a-zA-Z]+$/.test(s?.trim?.() ?? '');
+/* --------- Theme helpers (defensive) --------- */
+const isHex = (s?: string) => typeof s === 'string' && /^#([A-Fa-f0-9]{3,8})$/.test(s.trim());
+const isRgb = (s?: string) => typeof s === 'string' && /^rgba?\(/i.test(s.trim());
+const isColorName = (s?: string) => typeof s === 'string' && /^[a-zA-Z]+$/.test(s.trim());
 
-/** Recursively try to extract a color string from theme values (fallback to provided fallback) */
-function extractColor(value: any, fallback = '#000000') {
+function extractColor(value: any, fallback = '#000000'): string {
   if (value === null || value === undefined) return fallback;
   if (typeof value === 'string') {
     const s = value.trim();
-    // If it looks like a color return, otherwise still return string (themes often use token names)
     if (isHex(s) || isRgb(s) || isColorName(s) || s.length > 0) return s;
     return fallback;
   }
@@ -85,121 +117,58 @@ function extractColor(value: any, fallback = '#000000') {
   return fallback;
 }
 
+/* --------- Component --------- */
 const HealthHistoryScreen: React.FC<HealthHistoryScreenProps> = ({ route }) => {
   const { seniorId } = route.params;
-  const themeHook = useTheme() as any;
+  const themeHook: any = useTheme();
   const { t } = useTranslation();
+  const { width } = useWindowDimensions();
+  const CHART_WIDTH = Math.max(300, width - 40);
 
-  // defensive theme handling: support shapes like { colors: {...}, isDark } or { theme: {...}, isDark }
-  const isDark = !!(themeHook?.isDark);
+  // Defensive theme extraction
+  const isDark = !!themeHook?.isDark;
   const colorsObj = themeHook?.colors ?? themeHook?.theme ?? themeHook ?? {};
   const bgColor = extractColor(colorsObj.background, isDark ? '#0f172a' : '#ffffff');
+  const cardColor = extractColor(colorsObj.card, isDark ? '#1F2937' : '#FFFFFF');
   const textColor = extractColor(colorsObj.text, isDark ? '#E2E8F0' : '#1A202C');
-  const cardColor = extractColor(colorsObj.card, isDark ? '#111827' : '#F8FAFC');
-  const borderColor = extractColor(colorsObj.border, isDark ? '#1F2937' : 'rgba(0,0,0,0.08)');
   const primaryColor = extractColor(colorsObj.primary, isDark ? '#4FD1C5' : '#2C7A7B');
-  const tertiaryText = extractColor(colorsObj.textTertiary, isDark ? '#9CA3AF' : '#6B7280');
+  const borderColor = extractColor(colorsObj.border, isDark ? '#2D3748' : 'rgba(0,0,0,0.06)');
+  const borderBottomColor = extractColor(colorsObj.border ?? colorsObj.separator, isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)');
+  const tertiaryText = extractColor(colorsObj.textSecondary ?? colorsObj.textTertiary, isDark ? '#9CA3AF' : '#6B7280');
 
-  const [healthData, setHealthData] = useState<HealthData>({ records: [], lastUpdated: new Date() });
+  // State
+  const [healthData, setHealthData] = useState<HealthData>(() => ({
+    heartRate: { value: 72, unit: 'bpm', trend: 'stable', lastUpdated: new Date() },
+    bloodOxygen: { value: 98, unit: '%', trend: 'up', lastUpdated: new Date() },
+    bloodPressure: { systolic: 120, diastolic: 80, lastUpdated: new Date() },
+    steps: { value: 5423, unit: 'steps', trend: 'up', lastUpdated: new Date() },
+    calories: { value: 1245, unit: 'kcal', trend: 'up', lastUpdated: new Date() },
+    sleep: { duration: 420, quality: 85, lastUpdated: new Date() },
+    lastSync: new Date(),
+    records: [],
+  }));
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedRecord, setSelectedRecord] = useState<HealthRecord | null>(null);
   const [showRecordModal, setShowRecordModal] = useState(false);
+  const [selectedRecord, setSelectedRecord] = useState<HealthRecord | null>(null);
 
-  // Load health records
-  const loadHealthRecords = useCallback(async () => {
-    try {
-      setError(null);
-      // Simulate network latency
-      await new Promise((res) => setTimeout(res, 800));
+  /* --------- Helpers --------- */
+  const formatDate = (d?: Date) => (d ? dayjs(d).format('MMM D, YYYY') : 'N/A');
+  const formatRelative = (d?: Date) => (d ? dayjs(d).fromNow() : 'N/A');
 
-      // Mock data — replace with API call
-      const mockRecords: HealthRecord[] = [
-        {
-          id: '1',
-          date: new Date(2025, 10, 1),
-          title: 'Annual Checkup',
-          description: 'Routine physical examination with Dr. Smith',
-          type: 'appointment',
-          severity: 'low',
-          doctor: 'Dr. Sarah Smith',
-          location: 'City Medical Center',
-          notes: 'Blood work scheduled for next visit',
-        },
-        {
-          id: '2',
-          date: new Date(2025, 9, 15),
-          title: 'Blood Pressure Medication',
-          description: 'Prescribed Lisinopril 10mg daily',
-          type: 'medication',
-          severity: 'medium',
-          doctor: 'Dr. Michael Johnson',
-          notes: 'Monitor blood pressure twice daily',
-        },
-        {
-          id: '3',
-          date: new Date(2025, 9, 10),
-          title: 'Knee Pain',
-          description: 'Reported persistent knee pain, recommended to see orthopedic',
-          type: 'symptom',
-          severity: 'high',
-          doctor: 'Dr. Robert Chen',
-          notes: 'Schedule MRI if pain persists for more than 2 weeks',
-        },
-        {
-          id: '4',
-          date: new Date(2025, 8, 22),
-          title: 'Dental Cleaning',
-          description: 'Regular dental checkup and cleaning',
-          type: 'appointment',
-          severity: 'low',
-          doctor: 'Dr. Emily Wilson',
-          location: 'Bright Smile Dental',
-          notes: 'No cavities found, next cleaning in 6 months',
-        },
-        {
-          id: '5',
-          date: new Date(2025, 8, 5),
-          title: 'Allergy Medication',
-          description: 'Prescribed Loratadine 10mg as needed for allergies',
-          type: 'medication',
-          severity: 'low',
-          doctor: 'Dr. Sarah Smith',
-        },
-      ];
-
-      setHealthData({
-        records: mockRecords.sort((a, b) => b.date.getTime() - a.date.getTime()),
-        lastUpdated: new Date(),
-      });
-      setError(null);
-    } catch (err) {
-      console.error('Error loading health records:', err);
-      setError(t('Failed to load health records. Please try again.') || 'Failed to load health records. Please try again.');
-    } finally {
-      setIsLoading(false);
-      setRefreshing(false);
+  const getTrendIcon = (trend?: 'up' | 'down' | 'stable') => {
+    switch (trend) {
+      case 'up':
+        return <MaterialIcons name="arrow-upward" size={16} color="#48BB78" />;
+      case 'down':
+        return <MaterialIcons name="arrow-downward" size={16} color="#F56565" />;
+      default:
+        return <MaterialIcons name="remove" size={16} color={tertiaryText} />;
     }
-  }, [t]);
+  };
 
-  // initial load
-  useEffect(() => {
-    loadHealthRecords();
-  }, [loadHealthRecords]);
-
-  // pull to refresh
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    loadHealthRecords();
-  }, [loadHealthRecords]);
-
-  // date helpers
-  const formatDate = (date: Date) => dayjs(date).format('MMM D, YYYY');
-  const formatRelativeTime = (date: Date) => dayjs(date).fromNow();
-
-  // icons & severity color
-  const getRecordIcon = (type: HealthRecord['type']) => {
+  const getRecordIconName = (type: RecordType) => {
     switch (type) {
       case 'appointment':
         return 'event';
@@ -207,259 +176,386 @@ const HealthHistoryScreen: React.FC<HealthHistoryScreenProps> = ({ route }) => {
         return 'medication';
       case 'symptom':
         return 'warning';
+      case 'activity':
+        return 'directions-walk';
+      case 'vital':
+        return 'favorite';
       default:
         return 'info';
     }
   };
 
-  const getSeverityColor = (severity?: HealthRecord['severity']) => {
-    switch (severity) {
+  const severityColor = (s?: 'low' | 'medium' | 'high') => {
+    switch (s) {
       case 'high':
-        return '#E53E3E';
+        return '#F56565';
       case 'medium':
         return '#D69E2E';
       case 'low':
-        return '#38A169';
+        return '#48BB78';
       default:
-        return isDark ? '#A0AEC0' : '#4A5568';
+        return tertiaryText;
     }
   };
 
-  // record press
-  const handleRecordPress = (record: HealthRecord) => {
-    setSelectedRecord(record);
-    setShowRecordModal(true);
-  };
+  /* --------- Data loader (mock) --------- */
+  const loadHealthRecords = useCallback(async () => {
+    try {
+      setError(null);
+      setRefreshing(true);
 
-  const closeRecordModal = () => {
-    setShowRecordModal(false);
-    setSelectedRecord(null);
-  };
+      // Simulate network latency
+      await new Promise((res) => setTimeout(res, 700));
 
-  // Handle add record button press
-  const handleAddRecord = () => {
-    Alert.alert(
-      'Add Health Record',
-      'What type of record would you like to add?',
-      [
-        {
-          text: 'Appointment',
-          onPress: () => showAddRecordForm('appointment'),
+      // Create mock data
+      const now = new Date();
+      const mock: HealthData = {
+        heartRate: {
+          value: Math.floor(Math.random() * 30) + 60,
+          unit: 'bpm',
+          trend: ['up', 'down', 'stable'][Math.floor(Math.random() * 3)] as any,
+          lastUpdated: now,
         },
-        {
-          text: 'Medication',
-          onPress: () => showAddRecordForm('medication'),
+        bloodOxygen: {
+          value: Math.floor(Math.random() * 6) + 95,
+          unit: '%',
+          trend: ['up', 'down', 'stable'][Math.floor(Math.random() * 3)] as any,
+          lastUpdated: now,
         },
-        {
-          text: 'Symptom',
-          onPress: () => showAddRecordForm('symptom'),
+        bloodPressure: {
+          systolic: Math.floor(Math.random() * 30) + 100,
+          diastolic: Math.floor(Math.random() * 20) + 60,
+          lastUpdated: now,
         },
-        {
-          text: 'Cancel',
-          style: 'cancel',
+        steps: {
+          value: Math.floor(Math.random() * 5000) + 2000,
+          unit: 'steps',
+          trend: 'up',
+          lastUpdated: now,
         },
-      ],
-      { cancelable: true }
-    );
-  };
-
-  // Show add record form
-  const showAddRecordForm = (type: HealthRecord['type']) => {
-    Alert.alert('Add ' + type.charAt(0).toUpperCase() + type.slice(1), `This would open a form to add a new ${type} record.`, [
-      {
-        text: 'OK',
-        onPress: () => {
-          const newRecord: HealthRecord = {
-            id: Date.now().toString(),
+        calories: {
+          value: Math.floor(Math.random() * 1000) + 800,
+          unit: 'kcal',
+          trend: 'up',
+          lastUpdated: now,
+        },
+        sleep: {
+          duration: Math.floor(Math.random() * 240) + 360,
+          quality: Math.floor(Math.random() * 30) + 70,
+          lastUpdated: now,
+        },
+        lastSync: now,
+        records: [
+          {
+            id: 'hr1',
             date: new Date(),
-            title: `New ${type}`,
-            description: `Details about the ${type}`,
-            type,
+            title: 'Heart Rate',
+            description: 'Current heart rate reading',
+            type: 'vital',
+            icon: 'heart-pulse',
+            value: String(Math.floor(Math.random() * 30) + 60),
+            unit: 'bpm',
+          },
+          {
+            id: 'bp1',
+            date: new Date(),
+            title: 'Blood Pressure',
+            description: 'Blood pressure reading',
+            type: 'vital',
+            icon: 'blood-pressure',
+            value: '120/80',
+            unit: 'mmHg',
+          },
+          {
+            id: '1',
+            date: new Date(2025, 10, 1),
+            title: 'Annual Checkup',
+            description: 'Routine physical examination with Dr. Smith',
+            type: 'appointment',
+            severity: 'low',
+            doctor: 'Dr. Sarah Smith',
+            location: 'City Medical Center',
+            notes: 'Blood work scheduled for next visit',
+          },
+          {
+            id: '2',
+            date: new Date(2025, 9, 15),
+            title: 'Blood Pressure Medication',
+            description: 'Prescribed Lisinopril 10mg daily',
+            type: 'medication',
             severity: 'medium',
-          };
-          setHealthData((prev) => ({ ...prev, records: [newRecord, ...prev.records], lastUpdated: new Date() }));
-          Alert.alert('Success', 'Record added successfully!');
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  };
+            doctor: 'Dr. Michael Johnson',
+            notes: 'Monitor blood pressure twice daily',
+          },
+        ],
+      };
 
+      mock.records.sort((a, b) => b.date.getTime() - a.date.getTime());
+      setHealthData(mock);
+    } catch (err) {
+      console.error(err);
+      setError(t('Failed to load health records. Please try again.') || 'Failed to load health records. Please try again.');
+    } finally {
+      setIsLoading(false);
+      setRefreshing(false);
+    }
+  }, [t]);
+
+  useEffect(() => {
+    loadHealthRecords();
+  }, [loadHealthRecords]);
+
+  const onRefresh = useCallback(() => {
+    loadHealthRecords();
+  }, [loadHealthRecords]);
+
+  /* --------- Chart data helpers --------- */
+  const generateChartData = (dataPoints: number[], labels: string[]) => ({
+    labels,
+    datasets: [
+      {
+        data: dataPoints,
+        color: (opacity = 1) => primaryColor,
+        strokeWidth: 2,
+      },
+    ],
+  });
+
+  const heartRateData = useMemo(
+    () => generateChartData([72, 75, 71, 70, 69, 73, Number(healthData.heartRate.value as number)], ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']),
+    [healthData.heartRate.value, primaryColor]
+  );
+
+  const stepsData = useMemo(
+    () => generateChartData([3421, 4123, 3876, 4532, 4890, Number(healthData.steps.value as number), 0], ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']),
+    [healthData.steps.value, primaryColor]
+  );
+
+  /* --------- Render record item --------- */
   const renderRecordItem = ({ item }: { item: HealthRecord }) => (
     <TouchableOpacity
       style={[
         styles.recordCard,
         {
           backgroundColor: cardColor,
-          borderLeftWidth: 4,
-          borderLeftColor: getSeverityColor(item.severity),
+          borderColor,
         },
       ]}
-      onPress={() => handleRecordPress(item)}
+      onPress={() => {
+        setSelectedRecord(item);
+        setShowRecordModal(true);
+      }}
     >
       <View style={styles.recordHeader}>
         <View style={styles.recordType}>
-          <MaterialIcons name={getRecordIcon(item.type) as any} size={20} color={primaryColor} />
-          <Text style={[styles.recordTypeText, { color: primaryColor }]}>
-            {item.type.charAt(0).toUpperCase() + item.type.slice(1)}
-          </Text>
+          <MaterialIcons name={getRecordIconName(item.type)} size={16} color={tertiaryText} />
+          <Text style={[styles.recordTypeText, { color: tertiaryText }]}>{item.type}</Text>
         </View>
         <Text style={[styles.recordDate, { color: tertiaryText }]}>{formatDate(item.date)}</Text>
       </View>
 
       <Text style={[styles.recordTitle, { color: textColor }]}>{item.title}</Text>
 
-      <Text style={[styles.recordDescription, { color: tertiaryText }]} numberOfLines={2} ellipsizeMode="tail">
-        {item.description}
-      </Text>
+      {item.description ? <Text style={[styles.recordDescription, { color: tertiaryText }]}>{item.description}</Text> : null}
 
-      {item.severity && (
-        <View style={[styles.severityBadge, { backgroundColor: getSeverityColor(item.severity) + '33' }]}>
-          <Text style={[styles.severityText, { color: getSeverityColor(item.severity) }]}>{item.severity.toUpperCase()}</Text>
+      {item.severity ? (
+        <View style={[styles.severityBadge, { backgroundColor: `${severityColor(item.severity)}33` }]}>
+          <Text style={[styles.severityText, { color: severityColor(item.severity) }]}>{item.severity.toUpperCase()}</Text>
         </View>
-      )}
+      ) : null}
     </TouchableOpacity>
   );
 
-  const renderEmptyState = () => (
-    <View style={styles.emptyState}>
-      <MaterialIcons name="folder-open" size={48} color={isDark ? '#4A5568' : '#A0AEC0'} />
-      <Text style={[styles.emptyText, { color: tertiaryText }]}>No health records found. Add your first record to get started.</Text>
-    </View>
-  );
-
-  // Loading state (one central place)
-  if (isLoading && !refreshing) {
+  /* --------- Empty / Loading / Error states --------- */
+  if (isLoading) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: bgColor }]}>
         <ActivityIndicator size="large" color={primaryColor} />
-        <Text style={{ marginTop: 16, color: textColor, fontSize: 16 }}>Loading health records...</Text>
       </View>
     );
   }
 
-  // Error state
   if (error) {
     return (
       <View style={[styles.errorContainer, { backgroundColor: bgColor }]}>
-        <MaterialIcons name="error-outline" size={48} color="#E53E3E" />
+        <MaterialIcons name="error-outline" size={48} color={primaryColor} />
         <Text style={[styles.errorText, { color: textColor }]}>{error}</Text>
-        <TouchableOpacity style={[styles.retryButton, { backgroundColor: primaryColor }]} onPress={loadHealthRecords}>
-          <MaterialIcons name="refresh" size={18} color="white" style={{ marginRight: 8 }} />
-          <Text style={styles.buttonText}>Try Again</Text>
+        <TouchableOpacity style={[styles.retryButton, { borderColor: primaryColor }]} onPress={loadHealthRecords}>
+          <Text style={[styles.retryButtonText, { color: primaryColor }]}>Retry</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  // Main render
+  /* --------- Main UI --------- */
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
-      <View style={[styles.header, { borderBottomColor: borderColor }]}>
-        <Text style={[styles.title, { color: textColor }]}>Health History</Text>
-
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            style={[styles.refreshButton, { backgroundColor: isDark ? '#2D3748' : '#E2E8F0' }]}
-            onPress={onRefresh}
-            disabled={refreshing}
-          >
-            <MaterialIcons name="refresh" size={20} color={isDark ? primaryColor : primaryColor} />
-          </TouchableOpacity>
-
-          <TouchableOpacity style={[styles.addButton, { backgroundColor: primaryColor }]} onPress={handleAddRecord}>
-            <MaterialIcons name="add" size={20} color="white" />
-            <Text style={styles.buttonText}>Add</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <View style={styles.lastUpdated}>
-        <Text style={{ color: tertiaryText, fontSize: 12 }}>Last updated: {formatRelativeTime(healthData.lastUpdated)}</Text>
-      </View>
-
-      <FlatList
-        data={healthData.records}
-        renderItem={renderRecordItem}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        ListEmptyComponent={renderEmptyState}
+      <ScrollView
+        contentContainerStyle={styles.scrollView}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[primaryColor]} tintColor={primaryColor} />}
         showsVerticalScrollIndicator={false}
-      />
+      >
+        <View style={styles.header}>
+          <Text style={[styles.headerTitle, { color: textColor }]}>Health Overview</Text>
+          <Text style={[styles.lastUpdated, { color: tertiaryText }]}>Last sync: {formatRelative(healthData.lastSync)}</Text>
+        </View>
 
-      {/* Record Details Modal */}
-      <Modal visible={showRecordModal && selectedRecord !== null} animationType="slide" transparent={true} onRequestClose={closeRecordModal}>
+        {/* Metrics grid */}
+        <View style={styles.metricsGrid}>
+          {/** Heart Rate */}
+          <View style={[styles.healthMetric, { backgroundColor: cardColor, borderColor }]}>
+            <View style={styles.metricHeader}>
+              <MaterialCommunityIcons name="heart-pulse" size={22} color={primaryColor} />
+              <Text style={[styles.metricTitle, { color: textColor }]}>Heart Rate</Text>
+              <View style={styles.trendContainer}>{getTrendIcon(healthData.heartRate.trend)}</View>
+            </View>
+            <Text style={[styles.metricValue, { color: primaryColor }]}>
+              {healthData.heartRate.value} <Text style={[styles.metricUnit, { color: tertiaryText }]}>{healthData.heartRate.unit}</Text>
+            </Text>
+          </View>
+
+          {/** Blood Oxygen */}
+          <View style={[styles.healthMetric, { backgroundColor: cardColor, borderColor }]}>
+            <View style={styles.metricHeader}>
+              <MaterialCommunityIcons name="water" size={22} color={primaryColor} />
+              <Text style={[styles.metricTitle, { color: textColor }]}>SpO₂</Text>
+              <View style={styles.trendContainer}>{getTrendIcon(healthData.bloodOxygen.trend)}</View>
+            </View>
+            <Text style={[styles.metricValue, { color: primaryColor }]}>
+              {healthData.bloodOxygen.value} <Text style={[styles.metricUnit, { color: tertiaryText }]}>{healthData.bloodOxygen.unit}</Text>
+            </Text>
+          </View>
+
+          {/** Blood Pressure */}
+          <View style={[styles.healthMetric, { backgroundColor: cardColor, borderColor }]}>
+            <View style={styles.metricHeader}>
+              <MaterialCommunityIcons name="blood-bag" size={22} color={primaryColor} />
+              <Text style={[styles.metricTitle, { color: textColor }]}>Blood Pressure</Text>
+            </View>
+            <Text style={[styles.metricValue, { color: primaryColor }]}>
+              {healthData.bloodPressure.systolic}/{healthData.bloodPressure.diastolic} <Text style={[styles.metricUnit, { color: tertiaryText }]}>mmHg</Text>
+            </Text>
+          </View>
+
+          {/** Steps */}
+          <View style={[styles.healthMetric, { backgroundColor: cardColor, borderColor }]}>
+            <View style={styles.metricHeader}>
+              <MaterialCommunityIcons name="walk" size={22} color={primaryColor} />
+              <Text style={[styles.metricTitle, { color: textColor }]}>Steps</Text>
+              <View style={styles.trendContainer}>{getTrendIcon(healthData.steps.trend)}</View>
+            </View>
+            <Text style={[styles.metricValue, { color: primaryColor }]}>
+              {healthData.steps.value} <Text style={[styles.metricUnit, { color: tertiaryText }]}>{healthData.steps.unit}</Text>
+            </Text>
+          </View>
+        </View>
+
+        {/* Charts */}
+        <View style={[styles.chartContainer, { backgroundColor: cardColor, borderColor }]}>
+          <Text style={[styles.chartTitle, { color: textColor }]}>Heart Rate Trend</Text>
+          <LineChart
+            data={heartRateData}
+            width={CHART_WIDTH}
+            height={220}
+            chartConfig={{
+              backgroundColor: 'transparent',
+              backgroundGradientFrom: 'transparent',
+              backgroundGradientTo: 'transparent',
+              decimalPlaces: 0,
+              color: (opacity = 1) => primaryColor,
+              labelColor: (opacity = 1) => `rgba(0,0,0,${opacity})`,
+              style: {
+                borderRadius: 12,
+              },
+              propsForDots: {
+                r: '4',
+                strokeWidth: '2',
+                stroke: primaryColor,
+              },
+            }}
+            bezier
+            style={{ marginVertical: 8, borderRadius: 12 }}
+          />
+        </View>
+
+        <View style={[styles.chartContainer, { backgroundColor: cardColor, borderColor }]}>
+          <Text style={[styles.chartTitle, { color: textColor }]}>Daily Steps</Text>
+          <LineChart
+            data={stepsData}
+            width={CHART_WIDTH}
+            height={220}
+            chartConfig={{
+              backgroundColor: 'transparent',
+              backgroundGradientFrom: 'transparent',
+              backgroundGradientTo: 'transparent',
+              decimalPlaces: 0,
+              color: (opacity = 1) => primaryColor,
+              labelColor: (opacity = 1) => `rgba(0,0,0,${opacity})`,
+              style: { borderRadius: 12 },
+              propsForDots: { r: '4', strokeWidth: '2', stroke: primaryColor },
+            }}
+            bezier
+            style={{ marginVertical: 8, borderRadius: 12 }}
+          />
+        </View>
+
+        {/* Records */}
+        <Text style={[styles.sectionTitle, { color: textColor }]}>Recent Records</Text>
+        <FlatList data={healthData.records} renderItem={renderRecordItem} keyExtractor={(i) => i.id} scrollEnabled={false} contentContainerStyle={styles.recordsList} ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <MaterialIcons name="folder-open" size={48} color={tertiaryText} />
+            <Text style={[styles.emptyText, { color: tertiaryText }]}>No health records found</Text>
+          </View>
+        } />
+      </ScrollView>
+
+      {/* Record Modal */}
+      <Modal visible={showRecordModal} animationType="slide" transparent onRequestClose={() => setShowRecordModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: cardColor }]}>
             <View style={[styles.modalHeader, { borderBottomColor: borderColor }]}>
-              <Text style={[styles.modalTitle, { color: textColor }]}>{selectedRecord?.title}</Text>
-              <TouchableOpacity onPress={closeRecordModal} style={styles.closeButton}>
-                <MaterialIcons name="close" size={24} color={tertiaryText} />
-              </TouchableOpacity>
-            </View>
+            <Text style={[styles.modalTitle, { color: textColor }]}>{selectedRecord?.title}</Text>
+            <TouchableOpacity onPress={() => setShowRecordModal(false)} style={styles.closeButton}>
+              <MaterialIcons name="close" size={22} color={tertiaryText} />
+            </TouchableOpacity>
+          </View>
 
             <ScrollView style={styles.modalBody}>
-              <View style={styles.detailRow}>
-                <MaterialIcons name={getRecordIcon(selectedRecord?.type ?? 'other') as any} size={20} color={getSeverityColor(selectedRecord?.severity)} style={styles.detailIcon} />
-                <View>
-                  <Text style={[styles.detailLabel, { color: tertiaryText }]}>Type</Text>
-                  <Text style={[styles.detailValue, { color: textColor }]}>{selectedRecord?.type ? selectedRecord.type.charAt(0).toUpperCase() + selectedRecord.type.slice(1) : 'N/A'}</Text>
-                </View>
-              </View>
+              {selectedRecord?.description ? <Text style={{ color: textColor, marginBottom: 12 }}>{selectedRecord.description}</Text> : null}
 
-              <View style={styles.detailRow}>
-                <MaterialIcons name="date-range" size={20} color={getSeverityColor(selectedRecord?.severity)} style={styles.detailIcon} />
-                <View>
-                  <Text style={[styles.detailLabel, { color: tertiaryText }]}>Date</Text>
-                  <Text style={[styles.detailValue, { color: textColor }]}>{selectedRecord?.date ? formatDate(selectedRecord.date) : 'N/A'}</Text>
-                </View>
+              <View style={{ marginBottom: 12 }}>
+                <Text style={{ color: tertiaryText, fontSize: 13, marginBottom: 4 }}>Date</Text>
+                <Text style={{ color: textColor }}>{formatDate(selectedRecord?.date)}</Text>
               </View>
 
               {selectedRecord?.doctor && (
-                <View style={styles.detailRow}>
-                  <MaterialIcons name="person" size={20} color={getSeverityColor(selectedRecord?.severity)} style={styles.detailIcon} />
-                  <View>
-                    <Text style={[styles.detailLabel, { color: tertiaryText }]}>Doctor</Text>
-                    <Text style={[styles.detailValue, { color: textColor }]}>{selectedRecord.doctor}</Text>
-                  </View>
+                <View style={{ marginBottom: 12 }}>
+                  <Text style={{ color: tertiaryText, fontSize: 13, marginBottom: 4 }}>Doctor</Text>
+                  <Text style={{ color: textColor }}>{selectedRecord.doctor}</Text>
                 </View>
               )}
 
               {selectedRecord?.location && (
-                <View style={styles.detailRow}>
-                  <MaterialIcons name="location-on" size={20} color={getSeverityColor(selectedRecord?.severity)} style={styles.detailIcon} />
-                  <View>
-                    <Text style={[styles.detailLabel, { color: tertiaryText }]}>Location</Text>
-                    <Text style={[styles.detailValue, { color: textColor }]}>{selectedRecord.location}</Text>
-                  </View>
+                <View style={{ marginBottom: 12 }}>
+                  <Text style={{ color: tertiaryText, fontSize: 13, marginBottom: 4 }}>Location</Text>
+                  <Text style={{ color: textColor }}>{selectedRecord.location}</Text>
                 </View>
               )}
-
-              <View style={styles.section}>
-                <Text style={[styles.sectionTitle, { color: textColor }]}>Description</Text>
-                <Text style={[styles.sectionContent, { color: tertiaryText }]}>{selectedRecord?.description || 'No description available.'}</Text>
-              </View>
 
               {selectedRecord?.notes && (
-                <View style={styles.section}>
-                  <Text style={[styles.sectionTitle, { color: textColor }]}>Notes</Text>
-                  <Text style={[styles.sectionContent, { color: tertiaryText }]}>{selectedRecord.notes}</Text>
+                <View style={{ marginBottom: 12 }}>
+                  <Text style={{ color: tertiaryText, fontSize: 13, marginBottom: 4 }}>Notes</Text>
+                  <Text style={{ color: textColor }}>{selectedRecord.notes}</Text>
                 </View>
               )}
 
-              {selectedRecord?.severity && (
-                <View style={[styles.severityContainer, { backgroundColor: getSeverityColor(selectedRecord.severity) + '1A', borderColor: getSeverityColor(selectedRecord.severity) + '4D' }]}>
-                  <Text style={[styles.severityLabel, { color: getSeverityColor(selectedRecord.severity) }]}>{selectedRecord.severity.charAt(0).toUpperCase() + selectedRecord.severity.slice(1)} Priority</Text>
+              {selectedRecord?.value && (
+                <View style={{ marginBottom: 12 }}>
+                  <Text style={{ color: tertiaryText, fontSize: 13, marginBottom: 4 }}>Value</Text>
+                  <Text style={{ color: textColor }}>{selectedRecord.value} {selectedRecord.unit ?? ''}</Text>
                 </View>
               )}
             </ScrollView>
-
-            <View style={[styles.modalFooter, { borderTopColor: borderColor }]}>
-              <TouchableOpacity style={[styles.modalButton, { backgroundColor: primaryColor }]} onPress={closeRecordModal}>
-                <Text style={styles.modalButtonText}>Close</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </View>
       </Modal>
@@ -467,258 +563,59 @@ const HealthHistoryScreen: React.FC<HealthHistoryScreenProps> = ({ route }) => {
   );
 };
 
+/* --------- Styles --------- */
 const styles = StyleSheet.create({
-  // Main container
-  container: {
-    flex: 1,
-  },
-
-  // Header
-  header: {
-    flexDirection: 'row',
+  container: { flex: 1 },
+  scrollView: { padding: 16, paddingBottom: 40 },
+  header: { marginBottom: 12 },
+  headerTitle: { fontSize: 24, fontWeight: '700', marginBottom: 4 },
+  lastUpdated: { fontSize: 12, color: '#6B7280' },
+  metricsGrid: { 
+    flexDirection: 'row', 
+    flexWrap: 'wrap', 
     justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    paddingTop: Platform.OS === 'ios' ? 12 : 8,
-  },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-  },
-
-  // Last updated text
-  lastUpdated: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.05)',
-  },
-
-  // Buttons
-  addButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    marginLeft: 12,
-  },
-  refreshButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 8,
-  },
-  buttonText: {
-    color: 'white',
-    fontWeight: '600',
-    fontSize: 14,
-    marginLeft: 4,
-  },
-
-  // List
-  listContent: {
-    padding: 16,
-    paddingTop: 12,
-  },
-
-  // Record Card
-  recordCard: {
-    borderRadius: 12,
-    padding: 16,
     marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
+    paddingHorizontal: 8
   },
-  recordHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-    alignItems: 'center',
+  healthMetric: { 
+    width: '48%', 
+    marginBottom: 12, 
+    padding: 12, 
+    borderRadius: 10, 
+    borderWidth: 1 
   },
-  recordType: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  recordTypeText: {
-    marginLeft: 8,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  recordDate: {
-    fontSize: 12,
-    opacity: 0.8,
-  },
-  recordTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  recordDescription: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 8,
-  },
+  metricHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  metricTitle: { fontSize: 14, marginLeft: 8, flex: 1 },
+  trendContainer: { marginLeft: 4 },
+  metricValue: { fontSize: 22, fontWeight: '700' },
+  metricUnit: { fontSize: 12, fontWeight: '400', marginLeft: 6 },
+  chartContainer: { borderRadius: 12, padding: 12, marginBottom: 16, borderWidth: 1 },
+  chartTitle: { fontSize: 16, fontWeight: '500', marginBottom: 8 },
+  sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 8 },
+  recordsList: { paddingBottom: 30 },
+  recordCard: { borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1 },
+  recordHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6, alignItems: 'center' },
+  recordType: { flexDirection: 'row', alignItems: 'center' },
+  recordTypeText: { marginLeft: 8, fontSize: 12, textTransform: 'capitalize' },
+  recordDate: { fontSize: 12 },
+  recordTitle: { fontSize: 16, fontWeight: '600', marginBottom: 4 },
+  recordDescription: { fontSize: 14, marginBottom: 6 },
+  severityBadge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, marginTop: 4 },
+  severityText: { fontSize: 12, fontWeight: '600' },
 
-  // Severity Badge
-  severityBadge: {
-    alignSelf: 'flex-start',
-    paddingVertical: 2,
-    paddingHorizontal: 8,
-    borderRadius: 10,
-    marginTop: 4,
-  },
-  severityText: {
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
+  // Loading / Error
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  errorText: { marginTop: 16, fontSize: 16, textAlign: 'center' },
+  retryButton: { borderWidth: 1, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 4 },
 
-  // Empty State
-  emptyState: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 32,
-  },
-  emptyText: {
-    marginTop: 16,
-    textAlign: 'center',
-    fontSize: 15,
-    lineHeight: 22,
-    maxWidth: 280,
-  },
-
-  // Loading State
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  // Error State
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  errorText: {
-    marginTop: 16,
-    fontSize: 16,
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  retryButton: {
-    marginTop: 20,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // Modal Styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: '90%',
-    paddingBottom: 24,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    flex: 1,
-    marginRight: 16,
-  },
-  closeButton: {
-    padding: 4,
-  },
-  modalBody: {
-    padding: 20,
-  },
-  detailRow: {
-    flexDirection: 'row',
-    marginBottom: 20,
-    alignItems: 'flex-start',
-  },
-  detailIcon: {
-    marginRight: 16,
-    marginTop: 2,
-  },
-  detailLabel: {
-    fontSize: 12,
-    marginBottom: 2,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  detailValue: {
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  sectionContent: {
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  severityContainer: {
-    alignSelf: 'flex-start',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    marginTop: 8,
-  },
-  severityLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  modalFooter: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    borderTopWidth: 1,
-  },
-  modalButton: {
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalButtonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
-  },
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  modalContent: { borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: '85%', paddingBottom: 12 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12, borderBottomWidth: 1 },
+  modalTitle: { fontSize: 18, fontWeight: '700', flex: 1, marginRight: 8 },
+  closeButton: { padding: 6 },
+  modalBody: { padding: 12 },
 });
 
 export default HealthHistoryScreen;

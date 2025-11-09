@@ -1,725 +1,593 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  FlatList, 
-  TouchableOpacity, 
-  SafeAreaView, 
-  Image,
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  SafeAreaView,
   ActivityIndicator,
   RefreshControl,
-  Alert
+  Modal,
+  Alert,
+  ScrollView,
+  Image,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { StackNavigationProp } from '@react-navigation/stack';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { MaterialIcons, MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
 import { useTheme } from '../../contexts/theme/ThemeContext';
-import { useTranslation } from '../../contexts/translation/TranslationContext';
-import { useCachedTranslation } from '../../hooks/useCachedTranslation';
+import { useTranslation } from 'react-i18next';
 
-type RootStackParamList = {
-  SeniorDetail: { seniorId: string };
-  AlertDetail: { alertId: string };
-};
+dayjs.extend(relativeTime);
 
-type AlertType = 'medication' | 'fall' | 'heart' | 'location' | 'battery' | 'general';
+/* ---------------- Types ---------------- */
+type AlertType =
+  | 'medication'
+  | 'fall'
+  | 'heart'
+  | 'location'
+  | 'battery'
+  | 'general'
+  | 'appointment'
+  | 'vital';
+
+type PriorityType = 'high' | 'medium' | 'low';
+type FilterType = 'all' | 'unread' | PriorityType | AlertType;
 
 interface AlertItem {
   id: string;
   type: AlertType;
   title: string;
   message: string;
-  seniorId: string;
-  seniorName: string;
-  seniorAvatar: string;
   timestamp: Date;
   read: boolean;
-  priority: 'high' | 'medium' | 'low';
+  priority: PriorityType;
+  seniorName?: string;
+  seniorAvatar?: string;
+  details?: string;
 }
 
-const AlertsScreen = () => {
-  const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
-  const { isDark } = useTheme();
-  const { currentLanguage } = useTranslation();
-  
+/* --------- Theme helpers (defensive) --------- */
+const isHex = (s?: string) => typeof s === 'string' && /^#([A-Fa-f0-9]{3,8})$/.test(s.trim());
+const isRgb = (s?: string) => typeof s === 'string' && /^rgba?\(/i.test(s.trim());
+const isColorName = (s?: string) => typeof s === 'string' && /^[a-zA-Z]+$/.test(s.trim());
+
+function extractColor(value: any, fallback = '#000000'): string {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (isHex(s) || isRgb(s) || isColorName(s) || s.length > 0) return s;
+    return fallback;
+  }
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'object') {
+    const priorityKeys = ['hex', 'color', 'value', 'main', 'DEFAULT', 'default', 'light', 'dark', 'primary'];
+    for (const k of priorityKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, k)) {
+        const candidate = extractColor(value[k], null as any);
+        if (candidate) return candidate;
+      }
+    }
+    for (const k in value) {
+      if (Object.prototype.hasOwnProperty.call(value, k)) {
+        const candidate = extractColor(value[k], null as any);
+        if (candidate) return candidate;
+      }
+    }
+    if (Array.isArray(value)) {
+      for (const v of value) {
+        const candidate = extractColor(v, null as any);
+        if (candidate) return candidate;
+      }
+    }
+  }
+  return fallback;
+}
+
+/* ---------------- Screen ---------------- */
+const AlertsScreen: React.FC = () => {
+  const navigation = useNavigation<any>();
+  const themeHook: any = useTheme();
+  const { t } = useTranslation();
+
+  // Defensive theme extraction
+  const isDark = !!themeHook?.isDark;
+  const colorsObj = themeHook?.colors ?? themeHook?.theme ?? themeHook ?? {};
+  const bgColor = extractColor(colorsObj.background, isDark ? '#0f172a' : '#ffffff');
+  const cardColor = extractColor(colorsObj.card, isDark ? '#1F2937' : '#FFFFFF');
+  const textColor = extractColor(colorsObj.text, isDark ? '#E2E8F0' : '#1A202C');
+  const primaryColor = extractColor(colorsObj.primary, isDark ? '#4FD1C5' : '#2C7A7B');
+  const borderColor = extractColor(colorsObj.border, isDark ? '#2D3748' : 'rgba(0,0,0,0.08)');
+  const tertiaryText = extractColor(colorsObj.textSecondary ?? colorsObj.textTertiary, isDark ? '#9CA3AF' : '#6B7280');
+
+  // State
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [filter, setFilter] = 'all'; // 'all', 'unread', 'high', 'medication', 'fall', 'heart', 'location', 'battery'
+  const [selectedAlert, setSelectedAlert] = useState<AlertItem | null>(null);
+  const [showAlertModal, setShowAlertModal] = useState(false);
+  const [filter, setFilter] = useState<FilterType>('all');
 
-  // Translations
-  const { translatedText: alertsText } = useCachedTranslation('Alerts', currentLanguage);
-  const { translatedText: markAllAsReadText } = useCachedTranslation('Mark all as read', currentLanguage);
-  const { translatedText: noAlertsText } = useCachedTranslation('No alerts to display', currentLanguage);
-  const { translatedText: allText } = useCachedTranslation('All', currentLanguage);
-  const { translatedText: unreadText } = useCachedTranslation('Unread', currentLanguage);
-  const { translatedText: highPriorityText } = useCachedTranslation('High Priority', currentLanguage);
-  const { translatedText: medicationText } = useCachedTranslation('Medication', currentLanguage);
-  const { translatedText: fallDetectionText } = useCachedTranslation('Fall Detection', currentLanguage);
-  const { translatedText: heartRateText } = useCachedTranslation('Heart Rate', currentLanguage);
-  const { translatedText: locationText } = useCachedTranslation('Location', currentLanguage);
-  const { translatedText: batteryText } = useCachedTranslation('Battery', currentLanguage);
-  const { translatedText: minutesAgoText } = useCachedTranslation('{minutes} min ago', currentLanguage);
-  const { translatedText: hoursAgoText } = useCachedTranslation('{hours} hr ago', currentLanguage);
-  const { translatedText: daysAgoText } = useCachedTranslation('{days} d ago', currentLanguage);
-  const { translatedText: markAsReadText } = useCachedTranslation('Mark as read', currentLanguage);
-  const { translatedText: viewDetailsText } = useCachedTranslation('View details', currentLanguage);
-  const { translatedText: errorLoadingAlertsText } = useCachedTranslation('Error loading alerts', currentLanguage);
-  const { translatedText: retryText } = useCachedTranslation('Retry', currentLanguage);
+  // i18n fallbacks
+  const strings = {
+    header: t('Alerts') || 'Alerts',
+    markAll: t('Mark all as read') || 'Mark all as read',
+    all: t('All') || 'All',
+    unread: t('Unread') || 'Unread',
+    high: t('High') || 'High',
+    medium: t('Medium') || 'Medium',
+    low: t('Low') || 'Low',
+    medication: t('Medication') || 'Medication',
+    fall: t('Fall') || 'Fall',
+    heart: t('Heart') || 'Heart',
+    location: t('Location') || 'Location',
+    battery: t('Battery') || 'Battery',
+    appointment: t('Appointment') || 'Appointment',
+    vital: t('Vital') || 'Vital',
+    noAlerts: t('No alerts found') || 'No alerts found',
+    retry: t('Retry') || 'Retry',
+    details: t('Details') || 'Details',
+    close: t('Close') || 'Close',
+  };
 
-  // Mock data - replace with actual API calls
-  const fetchAlerts = async () => {
+  // Helpers
+  const formatRelative = (date?: Date) => (date ? dayjs(date).fromNow() : 'N/A');
+  const formatDate = (date?: Date) => (date ? dayjs(date).format('MMM D, YYYY h:mm A') : 'N/A');
+
+  const getAlertIcon = (type: AlertType): keyof typeof MaterialIcons.glyphMap => {
+    switch (type) {
+      case 'fall':
+        return 'error';
+      case 'medication':
+        return 'medication';
+      case 'heart':
+        return 'favorite';
+      case 'location':
+        return 'location-on';
+      case 'battery':
+        return 'battery-alert';
+      case 'appointment':
+        return 'event';
+      case 'vital':
+        return 'monitor-heart';
+      case 'general':
+      default:
+        return 'notifications';
+    }
+  };
+
+  const priorityColor = (p: PriorityType) => {
+    switch (p) {
+      case 'high':
+        return '#F56565';
+      case 'medium':
+        return '#D69E2E';
+      case 'low':
+      default:
+        return '#48BB78';
+    }
+  };
+
+  // Fetch alerts (mock)
+  const fetchAlerts = useCallback(async () => {
     setRefreshing(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
-      const mockAlerts: AlertItem[] = [
+      await new Promise((r) => setTimeout(r, 700));
+      const mock: AlertItem[] = [
         {
           id: '1',
           type: 'fall',
-          title: 'Fall Detected',
-          message: 'A potential fall was detected. Please check on John immediately.',
-          seniorId: '1',
-          seniorName: 'John Doe',
-          seniorAvatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          timestamp: new Date(Date.now() - 1000 * 60 * 5), // 5 minutes ago
+          title: t('Fall Detected') || 'Fall Detected',
+          message: t('A potential fall was detected. Please check immediately.') || 'A potential fall was detected. Please check immediately.',
+          timestamp: new Date(Date.now() - 5 * 60 * 1000),
           read: false,
-          priority: 'high'
+          priority: 'high',
+          details: t('Fall detected at 2:30 PM. Impact force was 3.5g.') || 'Fall detected at 2:30 PM. Impact force was 3.5g.',
+          seniorName: 'John Doe',
         },
         {
           id: '2',
           type: 'medication',
-          title: 'Medication Missed',
-          message: 'John has not taken his 2:00 PM medication (Lisinopril 10mg).',
-          seniorId: '1',
-          seniorName: 'John Doe',
-          seniorAvatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          timestamp: new Date(Date.now() - 1000 * 60 * 30), // 30 minutes ago
+          title: t('Medication Missed') || 'Medication Missed',
+          message: t('Afternoon medication was not taken.') || 'Afternoon medication was not taken.',
+          timestamp: new Date(Date.now() - 30 * 60 * 1000),
           read: false,
-          priority: 'medium'
+          priority: 'medium',
+          details: t('Lisinopril 10mg was scheduled for 2:00 PM') || 'Lisinopril 10mg was scheduled for 2:00 PM',
+          seniorName: 'Mary Smith',
         },
         {
           id: '3',
           type: 'heart',
-          title: 'High Heart Rate',
-          message: 'John\'s heart rate is elevated (112 BPM).',
-          seniorId: '1',
-          seniorName: 'John Doe',
-          seniorAvatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          timestamp: new Date(Date.now() - 1000 * 60 * 120), // 2 hours ago
+          title: t('High Heart Rate') || 'High Heart Rate',
+          message: t('Heart rate is elevated (112 BPM).') || 'Heart rate is elevated (112 BPM).',
+          timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000),
           read: true,
-          priority: 'high'
+          priority: 'high',
+          details: t('Normal range: 60-100 BPM\nLast reading: 112 BPM at 1:45 PM') || 'Normal range: 60-100 BPM\nLast reading: 112 BPM at 1:45 PM',
+          seniorName: 'Mary Smith',
         },
         {
           id: '4',
           type: 'location',
-          title: 'Unusual Location',
-          message: 'John has left his usual area and is now at Central Park.',
-          seniorId: '1',
-          seniorName: 'John Doe',
-          seniorAvatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          timestamp: new Date(Date.now() - 1000 * 60 * 60 * 5), // 5 hours ago
+          title: t('Unusual Location') || 'Unusual Location',
+          message: t('Left the usual area at 10:30 AM') || 'Left the usual area at 10:30 AM',
+          timestamp: new Date(Date.now() - 5 * 60 * 60 * 1000),
           read: true,
-          priority: 'medium'
+          priority: 'medium',
+          details: t('Current location: Central Park\nLeft home at 10:30 AM') || 'Current location: Central Park\nLeft home at 10:30 AM',
+          seniorName: 'John Doe',
         },
         {
           id: '5',
           type: 'battery',
-          title: 'Low Battery',
-          message: 'John\'s device battery is low (15%). Please remind him to charge it.',
-          seniorId: '1',
-          seniorName: 'John Doe',
-          seniorAvatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24), // 1 day ago
+          title: t('Low Battery') || 'Low Battery',
+          message: t('Device battery is at 15%') || 'Device battery is at 15%',
+          timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000),
           read: true,
-          priority: 'low'
+          priority: 'low',
+          details: t('Please charge the device as soon as possible.') || 'Please charge the device as soon as possible.',
+          seniorName: 'John Doe',
         },
         {
           id: '6',
-          type: 'general',
-          title: 'Weekly Report',
-          message: 'Weekly health report for John is now available.',
-          seniorId: '1',
-          seniorName: 'John Doe',
-          seniorAvatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24 * 2), // 2 days ago
+          type: 'appointment',
+          title: t('Upcoming Appointment') || 'Upcoming Appointment',
+          message: t('Doctor appointment tomorrow at 2:00 PM') || 'Doctor appointment tomorrow at 2:00 PM',
+          timestamp: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
           read: true,
-          priority: 'low'
+          priority: 'low',
+          details: t('Dr. Smith\nCardiology Dept\n123 Medical Center') || 'Dr. Smith\nCardiology Dept\n123 Medical Center',
+          seniorName: 'Mary Smith',
         },
       ];
-      
-      setAlerts(mockAlerts);
-    } catch (error) {
-      console.error('Error fetching alerts:', error);
+      setAlerts(mock);
+    } catch (e) {
+      console.error(e);
+      Alert.alert(t('Error') || 'Error', t('Failed to load alerts') || 'Failed to load alerts');
     } finally {
-      setLoading(false);
+      setIsLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
     fetchAlerts();
+  }, [fetchAlerts]);
+
+  // Filters
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter((a) => {
+      if (filter === 'all') return true;
+      if (filter === 'unread') return !a.read;
+      if (filter === 'high' || filter === 'medium' || filter === 'low') return a.priority === filter;
+      // else treat as AlertType
+      return a.type === filter;
+    });
+  }, [alerts, filter]);
+
+  // Mark read helpers
+  const markAsRead = useCallback((id: string) => {
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, read: true } : a)));
   }, []);
 
-  const markAsRead = (alertId: string) => {
-    setAlerts(prevAlerts => 
-      prevAlerts.map(alert => 
-        alert.id === alertId ? { ...alert, read: true } : alert
-      )
+  const markAllAsRead = useCallback(() => {
+    setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+  }, []);
+
+  // Renderers
+  const renderFilterButton = (id: FilterType, label: string) => {
+    const active = filter === id;
+    return (
+      <TouchableOpacity
+        key={id}
+        style={[
+          styles.filterButton,
+          {
+            borderColor: active ? primaryColor : borderColor,
+            backgroundColor: active ? primaryColor : 'transparent',
+          },
+        ]}
+        onPress={() => setFilter(id)}
+      >
+        <Text style={[styles.filterButtonText, { color: active ? '#FFFFFF' : tertiaryText }]}>{label}</Text>
+      </TouchableOpacity>
     );
   };
-
-  const markAllAsRead = () => {
-    setAlerts(prevAlerts => 
-      prevAlerts.map(alert => ({ ...alert, read: true }))
-    );
-  };
-
-  const getTimeAgo = (date: Date) => {
-    const now = new Date();
-    const diffInMs = now.getTime() - date.getTime();
-    const diffInMins = Math.floor(diffInMs / (1000 * 60));
-    const diffInHours = Math.floor(diffInMins / 60);
-    const diffInDays = Math.floor(diffInHours / 24);
-    
-    if (diffInMins < 60) {
-      return minutesAgoText.replace('{minutes}', diffInMins.toString());
-    } else if (diffInHours < 24) {
-      return hoursAgoText.replace('{hours}', diffInHours.toString());
-    } else {
-      return daysAgoText.replace('{days}', diffInDays.toString());
-    }
-  };
-
-  const getAlertIcon = (type: AlertType) => {
-    switch (type) {
-      case 'fall':
-        return 'alert-circle';
-      case 'medication':
-        'medical-bag';
-      case 'heart':
-        return 'heart-pulse';
-      case 'location':
-        return 'map-marker';
-      case 'battery':
-        return 'battery-alert';
-      case 'general':
-      default:
-        return 'information';
-    }
-  };
-
-  const getAlertColor = (type: AlertType) => {
-    switch (type) {
-      case 'fall':
-        return '#E53E3E';
-      case 'medication':
-        return '#4299E1';
-      case 'heart':
-        return '#F56565';
-      case 'location':
-        return '#9F7AEA';
-      case 'battery':
-        return '#ED8936';
-      case 'general':
-      default:
-        return '#718096';
-    }
-  };
-
-  const getPriorityColor = (priority: 'high' | 'medium' | 'low') => {
-    switch (priority) {
-      case 'high':
-        return '#E53E3E';
-      case 'medium':
-        return '#ED8936';
-      case 'low':
-      default:
-        return '#718096';
-    }
-  };
-
-  const filteredAlerts = alerts.filter(alert => {
-    if (filter === 'all') return true;
-    if (filter === 'unread') return !alert.read;
-    if (filter === 'high') return alert.priority === 'high';
-    return alert.type === filter;
-  });
 
   const renderAlertItem = ({ item }: { item: AlertItem }) => (
-    <TouchableOpacity 
-      style={[
-        styles.alertItem, 
-        { 
-          backgroundColor: isDark ? '#2D3748' : '#FFFFFF',
-          borderLeftColor: getAlertColor(item.type),
-          opacity: item.read ? 0.8 : 1,
-        }
-      ]}
-      onPress={() => {
-        if (!item.read) markAsRead(item.id);
-        navigation.navigate('AlertDetail', { alertId: item.id });
-      }}
-      activeOpacity={0.8}
-    >
-      <View style={styles.alertHeader}>
-        <View style={styles.alertTitleContainer}>
-          <MaterialCommunityIcons 
-            name={getAlertIcon(item.type) as any}
-            size={20} 
-            color={getAlertColor(item.type)} 
-            style={styles.alertIcon}
-          />
-          <Text 
-            style={[
-              styles.alertTitle, 
-              { color: isDark ? '#E2E8F0' : '#1A202C' },
-              !item.read && { fontWeight: '600' }
-            ]}
-            numberOfLines={1}
-          >
-            {item.title}
-          </Text>
-        </View>
-        
-        <View style={styles.alertMeta}>
-          <View 
-            style={[
-              styles.priorityBadge, 
-              { backgroundColor: `${getPriorityColor(item.priority)}20` }
-            ]}
-          >
-            <View 
-              style={[
-                styles.priorityDot, 
-                { backgroundColor: getPriorityColor(item.priority) }
-              ]} 
-            />
-            <Text 
-              style={[
-                styles.priorityText, 
-                { color: getPriorityColor(item.priority) }
-              ]}
-            >
-              {item.priority === 'high' 
-                ? highPriorityText 
-                : item.priority === 'medium' 
-                  ? 'Medium' 
-                  : 'Low'}
-            </Text>
-          </View>
-          
-          <Text 
-            style={[
-              styles.alertTime, 
-              { color: isDark ? '#A0AEC0' : '#718096' }
-            ]}
-          >
-            {getTimeAgo(item.timestamp)}
-          </Text>
-        </View>
-      </View>
-      
-      <Text 
-        style={[
-          styles.alertMessage, 
-          { color: isDark ? '#A0AEC0' : '#4A5568' }
-        ]}
-        numberOfLines={2}
-      >
-        {item.message}
-      </Text>
-      
-      <View style={styles.alertFooter}>
-        <View style={styles.seniorInfo}>
-          {item.seniorAvatar ? (
-            <Image 
-              source={{ uri: item.seniorAvatar }} 
-              style={styles.seniorAvatar} 
-            />
-          ) : (
-            <View style={[styles.seniorAvatar, { backgroundColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' }]}>
-              <Ionicons name="person" size={24} color="#718096" />
-            </View>
-          )}
-          <Text 
-            style={[
-              styles.seniorName, 
-              { color: isDark ? '#E2E8F0' : '#1A202C' }
-            ]}
-          >
-            {item.seniorName}
-          </Text>
-        </View>
-        
-        <View style={styles.alertActions}>
-          {!item.read && (
-            <TouchableOpacity 
-              style={styles.actionButton}
-              onPress={(e) => {
-                e.stopPropagation();
-                markAsRead(item.id);
-              }}
-            >
-              <Text style={[styles.actionButtonText, { color: isDark ? '#48BB78' : '#2F855A' }]}>
-                {markAsReadText}
-              </Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.viewDetailsButton]}
-            onPress={(e) => {
-              e.stopPropagation();
-              navigation.navigate('AlertDetail', { alertId: item.id });
-            }}
-          >
-            <Text style={[styles.actionButtonText, { color: isDark ? '#4299E1' : '#2B6CB0' }]}>
-              {viewDetailsText}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-      
-      {!item.read && <View style={styles.unreadBadge} />}
-    </TouchableOpacity>
-  );
-
-  const renderFilterButton = (filterType: string, label: string) => (
     <TouchableOpacity
       style={[
-        styles.filterButton,
-        filter === filterType && [
-          styles.activeFilterButton,
-          { 
-            backgroundColor: isDark ? '#48BB78' : '#2F855A',
-            borderColor: isDark ? '#48BB78' : '#2F855A',
-          }
-        ],
-        { 
-          borderColor: isDark ? '#4A5568' : '#CBD5E0',
-        }
+        styles.alertCard,
+        {
+          backgroundColor: cardColor,
+          borderColor,
+          borderLeftColor: priorityColor(item.priority),
+          opacity: item.read ? 0.9 : 1,
+        },
       ]}
-      onPress={() => setFilter(filterType)}
+      activeOpacity={0.85}
+      onPress={() => {
+        if (!item.read) markAsRead(item.id);
+        setSelectedAlert(item);
+        setShowAlertModal(true);
+      }}
     >
-      <Text 
-        style={[
-          styles.filterButtonText,
-          { 
-            color: filter === filterType 
-              ? '#FFFFFF' 
-              : isDark ? '#A0AEC0' : '#4A5568' 
-          }
-        ]}
-      >
-        {label}
+      <View style={styles.alertHeader}>
+        <View style={styles.alertIconContainer}>
+          <MaterialIcons name={getAlertIcon(item.type)} size={20} color={!item.read ? primaryColor : tertiaryText} />
+        </View>
+
+        <Text
+          style={[
+            styles.alertTitle,
+            {
+              color: !item.read ? textColor : tertiaryText,
+              fontWeight: !item.read ? '600' : '400',
+            },
+          ]}
+          numberOfLines={1}
+        >
+          {item.title}
+        </Text>
+
+        <Text style={[styles.alertTime, { color: tertiaryText }]}>{formatRelative(item.timestamp)}</Text>
+
+        {!item.read && <View style={[styles.unreadDot, { backgroundColor: primaryColor }]} />}
+      </View>
+
+      <Text style={[styles.alertMessage, { color: !item.read ? textColor : tertiaryText }]} numberOfLines={2}>
+        {item.message}
       </Text>
     </TouchableOpacity>
   );
 
-  if (loading) {
+  /* ---------- Empty / Loading ---------- */
+  if (isLoading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: isDark ? '#171923' : '#FFFBEF' }]}>
-        <ActivityIndicator size="large" color={isDark ? '#48BB78' : '#2F855A'} />
+      <View style={[styles.loadingContainer, { backgroundColor: bgColor }]}>
+        <ActivityIndicator size="large" color={primaryColor} />
       </View>
     );
   }
 
+  if (!isLoading && alerts.length === 0) {
+    return (
+      <View style={[styles.errorContainer, { backgroundColor: bgColor }]}>
+        <MaterialIcons name="error-outline" size={48} color={tertiaryText} />
+        <Text style={[styles.errorText, { color: textColor }]}>{strings.noAlerts}</Text>
+        <TouchableOpacity style={[styles.retryButton, { borderColor: primaryColor }]} onPress={fetchAlerts}>
+          <Text style={[styles.retryText, { color: primaryColor }]}>{strings.retry}</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  /* ---------------- UI ---------------- */
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#171923' : '#FFFBEF' }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
       {/* Header */}
-      <View style={[styles.header, { borderBottomColor: isDark ? '#2D3748' : '#E2E8F0' }]}>
-        <Text style={[styles.headerTitle, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-          {alertsText}
-        </Text>
-        
-        <TouchableOpacity 
-          style={styles.markAllButton}
-          onPress={markAllAsRead}
-          disabled={alerts.every(alert => alert.read)}
-        >
-          <Text 
+      <View style={[styles.header, { borderBottomColor: borderColor }]}>
+        <Text style={[styles.headerTitle, { color: textColor }]}>{strings.header}</Text>
+
+        <TouchableOpacity style={styles.markAllButton} onPress={markAllAsRead} disabled={alerts.every((a) => a.read)}>
+          <Text
             style={[
               styles.markAllButtonText,
-              { 
-                color: alerts.every(alert => alert.read) 
-                  ? (isDark ? '#4A5568' : '#A0AEC0') 
-                  : (isDark ? '#48BB78' : '#2F855A')
-              }
+              {
+                color: alerts.every((a) => a.read) ? tertiaryText : primaryColor,
+              },
             ]}
           >
-            {markAllAsReadText}
+            {strings.markAll}
           </Text>
         </TouchableOpacity>
       </View>
-      
-      {/* Filter Buttons */}
-      <View style={styles.filterContainer}>
-        <FlatList
-          data={[
-            { id: 'all', label: allText },
-            { id: 'unread', label: unreadText },
-            { id: 'high', label: highPriorityText },
-            { id: 'medication', label: medicationText },
-            { id: 'fall', label: fallDetectionText },
-            { id: 'heart', label: heartRateText },
-            { id: 'location', label: locationText },
-            { id: 'battery', label: batteryText },
-          ]}
-          renderItem={({ item }) => renderFilterButton(item.id, item.label)}
-          keyExtractor={item => item.id}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterList}
-        />
+
+      {/* Filters */}
+      <View style={[styles.filterRow, { borderBottomColor: borderColor }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterList}>
+          {renderFilterButton('all', strings.all)}
+          {renderFilterButton('unread', strings.unread)}
+          {renderFilterButton('high', strings.high)}
+          {renderFilterButton('medium', strings.medium)}
+          {renderFilterButton('low', strings.low)}
+          {renderFilterButton('medication', strings.medication)}
+          {renderFilterButton('fall', strings.fall)}
+          {renderFilterButton('heart', strings.heart)}
+          {renderFilterButton('location', strings.location)}
+          {renderFilterButton('battery', strings.battery)}
+          {renderFilterButton('appointment', strings.appointment)}
+          {renderFilterButton('vital', strings.vital)}
+        </ScrollView>
       </View>
-      
-      {/* Alerts List */}
-      {filteredAlerts.length > 0 ? (
-        <FlatList
-          data={filteredAlerts}
-          renderItem={renderAlertItem}
-          keyExtractor={item => item.id}
-          contentContainerStyle={styles.alertsList}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={fetchAlerts}
-              colors={[isDark ? '#48BB78' : '#2F855A']}
-              tintColor={isDark ? '#48BB78' : '#2F855A'}
-            />
-          }
-        />
-      ) : (
-        <View style={styles.emptyContainer}>
-          <Ionicons 
-            name="notifications-off" 
-            size={64} 
-            color={isDark ? '#4A5568' : '#A0AEC0'} 
-          />
-          <Text style={[styles.emptyText, { color: isDark ? '#A0AEC0' : '#718096' }]}>
-            {noAlertsText}
-          </Text>
+
+      {/* List */}
+      <FlatList
+        data={filteredAlerts}
+        keyExtractor={(i) => i.id}
+        renderItem={renderAlertItem}
+        contentContainerStyle={styles.listContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchAlerts} colors={[primaryColor]} tintColor={primaryColor} />}
+      />
+
+      {/* Details Modal */}
+      <Modal visible={showAlertModal} animationType="slide" transparent onRequestClose={() => setShowAlertModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: cardColor }]}>
+            <View style={[styles.modalHeader, { borderBottomColor: borderColor }]}>
+              <View style={styles.modalTitleContainer}>
+                <MaterialIcons
+                  name={getAlertIcon(selectedAlert?.type || 'general')}
+                  size={20}
+                  color={priorityColor(selectedAlert?.priority || 'low')}
+                  style={styles.modalIcon}
+                />
+                <Text style={[styles.modalTitle, { color: textColor }]} numberOfLines={2}>
+                  {selectedAlert?.title || strings.details}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowAlertModal(false)} style={styles.closeButton}>
+                <MaterialIcons name="close" size={22} color={tertiaryText} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody}>
+              <View style={styles.modalMeta}>
+                <View
+                  style={[
+                    styles.priorityBadge,
+                    {
+                      borderColor: priorityColor(selectedAlert?.priority || 'low'),
+                      backgroundColor: `${priorityColor(selectedAlert?.priority || 'low')}22`,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.priorityText, { color: priorityColor(selectedAlert?.priority || 'low') }]}>
+                    {(selectedAlert?.priority || 'low').toUpperCase()}
+                  </Text>
+                </View>
+                <Text style={[styles.modalTime, { color: tertiaryText }]}>{formatDate(selectedAlert?.timestamp)}</Text>
+              </View>
+
+              {selectedAlert?.message ? (
+                <Text style={[styles.modalMessage, { color: textColor }]}>{selectedAlert.message}</Text>
+              ) : null}
+
+              {selectedAlert?.details ? (
+                <View
+                  style={[
+                    styles.detailsContainer,
+                    { backgroundColor: isDark ? '#111827' : '#F8FAFC', borderColor: borderColor, borderWidth: 1 },
+                  ]}
+                >
+                  <Text style={[styles.detailsTitle, { color: textColor }]}>{t('Details') || 'Details'}</Text>
+                  <Text style={[styles.detailsText, { color: tertiaryText }]}>{selectedAlert.details}</Text>
+                </View>
+              ) : null}
+
+              {selectedAlert?.seniorName ? (
+                <View style={{ marginTop: 12 }}>
+                  <Text style={[styles.detailsTitle, { color: textColor }]}>{t('Senior') || 'Senior'}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
+                    {selectedAlert.seniorAvatar ? (
+                      <Image source={{ uri: selectedAlert.seniorAvatar }} style={{ width: 28, height: 28, borderRadius: 14, marginRight: 8 }} />
+                    ) : (
+                      <View
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 14,
+                          marginRight: 8,
+                          backgroundColor: isDark ? '#374151' : '#E5E7EB',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Ionicons name="person" size={16} color={tertiaryText} />
+                      </View>
+                    )}
+                    <Text style={{ color: textColor, fontWeight: '600' }}>{selectedAlert.seniorName}</Text>
+                  </View>
+                </View>
+              ) : null}
+            </ScrollView>
+
+            <View style={[styles.modalFooter, { borderTopColor: borderColor }]}>
+              <TouchableOpacity
+                style={[styles.actionButton, { backgroundColor: primaryColor }]}
+                onPress={() => setShowAlertModal(false)}
+              >
+                <Text style={styles.actionButtonText}>{strings.close}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
-      )}
+      </Modal>
     </SafeAreaView>
   );
 };
 
+/* ---------------- Styles ---------------- */
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFBEF',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  errorText: {
-    fontSize: 16,
-    marginTop: 16,
-    textAlign: 'center',
-    color: '#1A202C',
-  },
-  retryButton: {
-    marginTop: 20,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    backgroundColor: '#E2E8F0',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  retryButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#1A202C',
-  },
+  container: { flex: 1 },
+
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1A202C',
-  },
-  markAllButton: {
-    padding: 4,
-  },
-  markAllButtonText: {
-    fontSize: 14,
-    color: '#2F855A',
-    fontWeight: '500',
-  },
-  filterContainer: {
+    paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
   },
-  filterList: {
-    paddingHorizontal: 16,
+  headerTitle: { fontSize: 24, fontWeight: '700' },
+  markAllButton: { padding: 4 },
+  markAllButtonText: { fontSize: 14, fontWeight: '500' },
+
+  filterRow: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
   },
+  filterList: { paddingHorizontal: 16 },
   filterButton: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 16,
     borderWidth: 1,
     marginRight: 8,
-    height: 32,
-    justifyContent: 'center',
   },
-  activeFilterButton: {
-    backgroundColor: '#2F855A',
-    borderColor: '#2F855A',
-  },
-  filterButtonText: {
-    fontSize: 14,
-    color: '#4A5568',
-  },
-  alertsList: {
+  filterButtonText: { fontSize: 14, fontWeight: '500' },
+
+  listContent: { padding: 16 },
+
+  alertCard: {
     padding: 16,
-  },
-  alertItem: {
     borderRadius: 12,
-    padding: 16,
     marginBottom: 12,
+    borderWidth: 1,
     borderLeftWidth: 4,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  unreadBadge: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    width: 8,
-    height: 8,
-    backgroundColor: '#E53E3E',
-    borderBottomLeftRadius: 8,
   },
   alertHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     marginBottom: 8,
   },
-  alertTitleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    marginRight: 8,
-  },
-  alertIcon: {
-    marginRight: 8,
-  },
-  alertTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#1A202C',
-    flexShrink: 1,
-  },
-  alertMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  priorityBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
-    marginRight: 8,
-  },
-  priorityDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 4,
-  },
-  priorityText: {
-    fontSize: 10,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  alertTime: {
-    fontSize: 12,
-    color: '#718096',
-  },
-  alertMessage: {
-    fontSize: 14,
-    color: '#4A5568',
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  alertFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(0, 0, 0, 0.05)',
-  },
-  seniorInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  seniorAvatar: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    marginRight: 8,
-  },
-  seniorName: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#1A202C',
-  },
-  alertActions: {
-    flexDirection: 'row',
-  },
-  actionButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  viewDetailsButton: {
-    marginLeft: 8,
-  },
-  actionButtonText: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 40,
-  },
-  emptyText: {
-    fontSize: 16,
-    marginTop: 16,
-    textAlign: 'center',
-    color: '#718096',
-  },
+  alertIconContainer: { marginRight: 12 },
+  alertTitle: { flex: 1, fontSize: 16, marginRight: 8 },
+  alertTime: { fontSize: 12, marginLeft: 'auto' },
+  alertMessage: { fontSize: 14, lineHeight: 20 },
+
+  unreadDot: { width: 8, height: 8, borderRadius: 4, marginLeft: 8 },
+
+  // Empty/Loading/Error
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  errorContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  errorText: { marginTop: 16, fontSize: 16, textAlign: 'center' },
+  retryButton: { marginTop: 16, paddingVertical: 8, paddingHorizontal: 16, borderRadius: 4, borderWidth: 1 },
+  retryText: { fontSize: 14, fontWeight: '500' },
+
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '90%' },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1 },
+  modalTitleContainer: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  modalIcon: { marginRight: 10 },
+  modalTitle: { fontSize: 18, fontWeight: '700', flex: 1 },
+  closeButton: { padding: 6 },
+  modalBody: { padding: 16 },
+  modalMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  modalTime: { fontSize: 13 },
+  priorityBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, borderWidth: 1 },
+  priorityText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.4 },
+  modalMessage: { fontSize: 16, lineHeight: 24, marginBottom: 12 },
+  detailsContainer: { borderRadius: 8, padding: 12, marginTop: 6 },
+  detailsTitle: { fontSize: 14, fontWeight: '700', marginBottom: 6 },
+  detailsText: { fontSize: 14, lineHeight: 20 },
+  modalFooter: { padding: 16, borderTopWidth: 1 },
+  actionButton: { padding: 12, borderRadius: 8, alignItems: 'center' },
+  actionButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });
 
 export default AlertsScreen;
