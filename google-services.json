@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "250806954681",
+    "project_id": "caretrekapp",
+    "storage_bucket": "caretrekapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:250806954681:android:5e153850d6791e0ebf4968",
+        "android_client_info": {
+          "package_name": "com.humeshdeshmukh.caretrek"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBpulOUKhET87TZeSDO0kcxiEcJEnMpHVk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
