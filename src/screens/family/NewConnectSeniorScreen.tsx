@@ -128,9 +128,8 @@ const NewConnectSeniorScreen: React.FC = () => {
   const lookupSeniorName = (id: string) => {
     // This is a mock implementation - replace with your actual name lookup logic
     const mockNames: Record<string, string> = {
-      'ABC123': 'John Smith',
-      'DEF456': 'Sarah Johnson',
-      'GHI789': 'Robert Davis'
+      'senior-001': 'Bhushan Mahant',
+      'senior-002': 'Aditi Lanjewar'
     };
     return mockNames[id] || '';
   };
@@ -376,7 +375,7 @@ const NewConnectSeniorScreen: React.FC = () => {
                     flex: 1,
                     fontSize: 16,
                   }}
-                  placeholder="e.g. John Doe"
+                  placeholder="e.g. Bhushan Mahant"
                   placeholderTextColor={textTertiary}
                   value={formData.seniorName}
                   onChangeText={(val: string) => handleInputChange('seniorName', val)}

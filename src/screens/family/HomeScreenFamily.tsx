@@ -69,56 +69,61 @@ const HomeScreenFamily = () => {
   
   // Clear all senior data on initial load (for development/testing)
   // Remove or comment this out in production
-  useEffect(() => {
-    const clearData = async () => {
-      try {
-        await clearAllSeniors();
-        console.log('Cleared all senior data');
-      } catch (error) {
-        console.error('Error clearing senior data:', error);
-      }
-    };
-    
-    clearData();
-  }, []);
+  // useEffect(() => {
+  //   const clearData = async () => {
+  //     try {
+  //       await clearAllSeniors();
+  //       console.log('Cleared all senior data');
+  //     } catch (error) {
+  //       console.error('Error clearing senior data:', error);
+  //     }
+  //   };
+  //   
+  //   clearData();
+  // }, []);
   
+  // Function to update senior data with new profiles
+  const updateSeniorProfiles = async () => {
+    try {
+      const newSeniors: SeniorData[] = [
+        {
+          id: '1',
+          name: 'Bhushan Mahant',
+          seniorId: 'senior-001',
+          status: 'online',
+          lastActive: '2 min ago',
+          heartRate: 75,
+          oxygen: 97,
+          battery: 85,
+          location: 'Home'
+        },
+        {
+          id: '2',
+          name: 'Aditi Lanjewar',
+          seniorId: 'senior-002',
+          status: 'alert',
+          lastActive: '5 min ago',
+          heartRate: 88,
+          oxygen: 95,
+          battery: 72,
+          location: 'Park'
+        }
+      ];
+      await saveSeniors(newSeniors);
+      setSeniorMembers(newSeniors);
+    } catch (error) {
+      console.error('Error updating senior profiles:', error);
+    }
+  };
+
   // Load connected seniors from storage
   const loadSeniors = useCallback(async () => {
     try {
       const savedSeniors = await getSeniors();
       
-      // If no seniors in storage, use sample data (first time setup)
+      // If no seniors exist, create default ones
       if (savedSeniors.length === 0) {
-        const sampleSeniors: SeniorData[] = [
-          {
-            id: '1',
-            name: 'John Smith',
-            seniorId: 'ABC123',
-            status: 'online',
-            lastActive: 'Active now',
-            heartRate: 72,
-            oxygen: 98,
-            battery: 85,
-            location: 'Living Room',
-            avatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          },
-          {
-            id: '2',
-            name: 'Sarah Johnson',
-            seniorId: 'DEF456',
-            status: 'offline',
-            lastActive: '2 hours ago',
-            heartRate: 68,
-            oxygen: 97,
-            battery: 45,
-            location: 'Bedroom',
-            avatar: 'https://randomuser.me/api/portraits/women/1.jpg',
-          },
-        ];
-        
-        // Save sample data to storage
-        await saveSeniors(sampleSeniors);
-        setSeniorMembers(sampleSeniors);
+        await updateSeniorProfiles();
       } else {
         setSeniorMembers(savedSeniors);
       }

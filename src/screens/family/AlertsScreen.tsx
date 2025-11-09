@@ -185,7 +185,7 @@ const AlertsScreen: React.FC = () => {
           read: false,
           priority: 'high',
           details: t('Fall detected at 2:30 PM. Impact force was 3.5g.') || 'Fall detected at 2:30 PM. Impact force was 3.5g.',
-          seniorName: 'John Doe',
+          seniorName: 'Bhushan Mahant',
         },
         {
           id: '2',
@@ -218,7 +218,7 @@ const AlertsScreen: React.FC = () => {
           read: true,
           priority: 'medium',
           details: t('Current location: Central Park\nLeft home at 10:30 AM') || 'Current location: Central Park\nLeft home at 10:30 AM',
-          seniorName: 'John Doe',
+          seniorName: 'Bhushan Mahant',
         },
         {
           id: '5',
@@ -229,7 +229,7 @@ const AlertsScreen: React.FC = () => {
           read: true,
           priority: 'low',
           details: t('Please charge the device as soon as possible.') || 'Please charge the device as soon as possible.',
-          seniorName: 'John Doe',
+          seniorName: 'Bhushan Mahant',
         },
         {
           id: '6',

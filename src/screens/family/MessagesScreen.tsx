@@ -1,27 +1,38 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  FlatList, 
-  TouchableOpacity, 
-  SafeAreaView, 
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  SafeAreaView,
   TextInput,
   Image,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Alert
+  Alert,
+  useWindowDimensions,
+  ScrollView,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/theme/ThemeContext';
-import { useTranslation } from '../../contexts/translation/TranslationContext';
-import { useCachedTranslation } from '../../hooks/useCachedTranslation';
+import { useTranslation } from 'react-i18next';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import 'dayjs/locale/en';
+
+dayjs.extend(relativeTime);
 
 type RootStackParamList = {
-  Messages: { seniorId: string };
+  Messages: {
+    seniorId: string;
+    seniorName?: string;
+    seniorAvatar?: string;
+    status?: 'online' | 'offline' | 'alert';
+  };
   SeniorDetail: { seniorId: string };
 };
 
@@ -36,456 +47,367 @@ type Message = {
 type Senior = {
   id: string;
   name: string;
-  avatar: string;
+  avatar?: string;
   status: 'online' | 'offline' | 'alert';
+  lastSeen?: Date;
 };
 
-const MessagesScreen = () => {
+// Defensive theme color extractor (handles objects or strings)
+const isHex = (s?: string) => typeof s === 'string' && /^#([A-Fa-f0-9]{3,8})$/.test(s.trim());
+const isRgb = (s?: string) => typeof s === 'string' && /^rgba?\(/i.test(s.trim());
+const isColorName = (s?: string) => typeof s === 'string' && /^[a-zA-Z]+$/.test(s.trim());
+
+function extractColor(value: any, fallback = '#000000'): string {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (isHex(s) || isRgb(s) || isColorName(s) || s.length > 0) return s;
+    return fallback;
+  }
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'object') {
+    const priorityKeys = ['hex', 'color', 'value', 'main', 'DEFAULT', 'default', 'light', 'dark', 'primary'];
+    for (const k of priorityKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, k)) {
+        const candidate = extractColor(value[k], null as any);
+        if (candidate) return candidate;
+      }
+    }
+    for (const k in value) {
+      if (Object.prototype.hasOwnProperty.call(value, k)) {
+        const candidate = extractColor(value[k], null as any);
+        if (candidate) return candidate;
+      }
+    }
+    if (Array.isArray(value)) {
+      for (const v of value) {
+        const candidate = extractColor(v, null as any);
+        if (candidate) return candidate;
+      }
+    }
+  }
+  return fallback;
+}
+
+const MessagesScreen: React.FC = () => {
   const route = useRoute<RouteProp<RootStackParamList, 'Messages'>>();
   const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
-  const { isDark } = useTheme();
-  const { currentLanguage } = useTranslation();
-  
+  const { width } = useWindowDimensions();
+  const themeHook: any = useTheme();
+  const { t } = useTranslation();
+
+  // Defensive theme extraction
+  const isDark = !!themeHook?.isDark;
+  const colorsObj = themeHook?.colors ?? themeHook?.theme ?? themeHook ?? {};
+  const bgColor = extractColor(colorsObj.background, isDark ? '#0f172a' : '#ffffff');
+  const cardColor = extractColor(colorsObj.card, isDark ? '#1F2937' : '#FFFFFF');
+  const textColor = extractColor(colorsObj.text, isDark ? '#E2E8F0' : '#1A202C');
+  const primaryColor = extractColor(colorsObj.primary, isDark ? '#4FD1C5' : '#2C7A7B');
+  const borderColor = extractColor(colorsObj.border, isDark ? '#2D3748' : 'rgba(0,0,0,0.06)');
+  const inputBg = extractColor(colorsObj.background, isDark ? '#1F2937' : '#F3F4F6');
+  const inputText = extractColor(colorsObj.text, isDark ? '#E5E7EB' : '#1F2937');
+  const tertiaryText = extractColor(colorsObj.textSecondary ?? colorsObj.textTertiary, isDark ? '#9CA3AF' : '#6B7280');
+
+  // State
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [senior, setSenior] = useState<Senior | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSending, setIsSending] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [senior, setSenior] = useState<Senior | null>(() => ({
+    id: route.params.seniorId,
+    name: route.params.seniorName || t('Senior'),
+    avatar: route.params.seniorAvatar,
+    status: route.params.status || 'offline',
+    lastSeen: new Date(),
+  }));
 
-  // Translations
-  const { translatedText: backText } = useCachedTranslation('Back', currentLanguage);
-  const { translatedText: typeMessageText } = useCachedTranslation('Type a message...', currentLanguage);
-  const { translatedText: onlineText } = useCachedTranslation('Online', currentLanguage);
-  const { translatedText: offlineText } = useCachedTranslation('Offline', currentLanguage);
-  const { translatedText: alertText } = useCachedTranslation('Needs Attention', currentLanguage);
-  const { translatedText: errorLoadingText } = useCachedTranslation('Error loading messages', currentLanguage);
-  const { translatedText: retryText } = useCachedTranslation('Retry', currentLanguage);
-  const { translatedText: emptyMessagesText } = useCachedTranslation('No messages yet', currentLanguage);
-  const { translatedText: startConversationText } = useCachedTranslation('Start a conversation with {name}', currentLanguage);
-  const { translatedText: todayText } = useCachedTranslation('Today', currentLanguage);
-  const { translatedText: yesterdayText } = useCachedTranslation('Yesterday', currentLanguage);
-
-  // Mock data - replace with actual API calls
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        // Simulate API call
-        await new Promise(resolve => setTimeout(resolve, 800));
-        
-        // Mock senior data
-        const mockSenior: Senior = {
-          id: route.params.seniorId,
-          name: route.params.seniorId === '1' ? 'John Doe' : 'Jane Smith',
-          avatar: route.params.seniorId === '1' 
-            ? 'https://randomuser.me/api/portraits/men/1.jpg' 
-            : 'https://randomuser.me/api/portraits/women/1.jpg',
-          status: 'online'
-        };
-        
-        // Mock messages
-        const mockMessages: Message[] = [
-          {
-            id: '1',
-            text: 'Hi there! How are you doing today?',
-            sender: 'senior',
-            timestamp: new Date(Date.now() - 1000 * 60 * 30), // 30 minutes ago
-            read: true
-          },
-          {
-            id: '2',
-            text: 'I\'m doing well, thanks for asking! How about you?',
-            sender: 'user',
-            timestamp: new Date(Date.now() - 1000 * 60 * 25), // 25 minutes ago
-            read: true
-          },
-          {
-            id: '3',
-            text: 'I\'m good too! Just checking in to see if you took your medication.',
-            sender: 'senior',
-            timestamp: new Date(Date.now() - 1000 * 60 * 20), // 20 minutes ago
-            read: true
-          },
-          {
-            id: '4',
-            text: 'Yes, I took my morning pills at 8 AM.',
-            sender: 'user',
-            timestamp: new Date(Date.now() - 1000 * 60 * 15), // 15 minutes ago
-            read: true
-          },
-          {
-            id: '5',
-            text: 'Great! Remember you have a doctor\'s appointment tomorrow at 2 PM.',
-            sender: 'senior',
-            timestamp: new Date(Date.now() - 1000 * 60 * 10), // 10 minutes ago
-            read: true
-          },
-          {
-            id: '6',
-            text: 'Thanks for the reminder! I almost forgot.',
-            sender: 'user',
-            timestamp: new Date(Date.now() - 1000 * 60 * 5), // 5 minutes ago
-            read: false
-          },
-        ];
-        
-        setSenior(mockSenior);
-        setMessages(mockMessages);
-      } catch (error) {
-        console.error('Error fetching messages:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, [route.params.seniorId]);
-
-  const handleSendMessage = () => {
-    if (!newMessage.trim()) return;
-    
-    const newMsg: Message = {
-      id: Date.now().toString(),
-      text: newMessage,
-      sender: 'user',
-      timestamp: new Date(),
-      read: false
-    };
-    
-    setMessages([...messages, newMsg]);
-    setNewMessage('');
-    
-    // Simulate typing indicator
-    setIsTyping(true);
-    
-    // Simulate reply after a delay
-    setTimeout(() => {
-      const reply: Message = {
-        id: (Date.now() + 1).toString(),
-        text: 'Thanks for your message! I\'ll get back to you soon.',
-        sender: 'senior',
-        timestamp: new Date(),
-        read: false
-      };
-      
-      setMessages(prev => [...prev, reply]);
-      setIsTyping(false);
-    }, 2000);
+  // i18n fallbacks
+  const strings = {
+    back: t('Back') || 'Back',
+    typeMessage: t('Type a message...') || 'Type a message...',
+    online: t('Online') || 'Online',
+    offline: t('Offline') || 'Offline',
+    needsAttention: t('Needs Attention') || 'Needs Attention',
+    errorLoading: t('Error loading messages') || 'Error loading messages',
+    retry: t('Retry') || 'Retry',
+    noMessages: t('No messages yet') || 'No messages yet',
+    startConversation: t('Start a conversation with {name}') || 'Start a conversation with {name}',
+    today: t('Today') || 'Today',
+    yesterday: t('Yesterday') || 'Yesterday',
+    send: t('Send') || 'Send',
+    error: t('Error') || 'Error',
+    failedToSend: t('Failed to send message') || 'Failed to send message',
+    them: t('them') || 'them',
   };
 
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
-  const formatDate = (date: Date) => {
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    
-    if (date.toDateString() === today.toDateString()) {
-      return todayText;
-    } else if (date.toDateString() === yesterday.toDateString()) {
-      return yesterdayText;
-    } else {
-      return date.toLocaleDateString();
+  // Fetch messages (mock)
+  const fetchMessages = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      await new Promise((r) => setTimeout(r, 700));
+      // Mock: start with an example conversation or empty list
+      const mock: Message[] = [
+        {
+          id: 'm1',
+          text: 'Hello — how are you today?',
+          sender: 'senior',
+          timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24),
+          read: true,
+        },
+        {
+          id: 'm2',
+          text: 'I am fine, thank you!',
+          sender: 'user',
+          timestamp: new Date(Date.now() - 1000 * 60 * 60 * 23.5),
+          read: true,
+        },
+      ];
+      setMessages(mock);
+    } catch (err) {
+      console.error('Error fetching messages:', err);
+      Alert.alert(strings.error, strings.errorLoading);
+    } finally {
+      setIsLoading(false);
     }
-  };
+  }, [strings.error, strings.errorLoading]);
 
-  const renderMessage = ({ item, index }: { item: Message; index: number }) => {
-    const isUser = item.sender === 'user';
-    const showAvatar = index === 0 || 
-      messages[index - 1].sender !== item.sender || 
-      (new Date(item.timestamp).getTime() - new Date(messages[index - 1].timestamp).getTime()) > 1000 * 60 * 5; // 5 minutes
-    
-    const showDate = index === 0 || 
-      new Date(item.timestamp).toDateString() !== new Date(messages[index - 1].timestamp).toDateString();
-    
-    const renderDateSeparator = (date: string) => (
-      <View style={styles.dateSeparator}>
-        <Text style={[styles.dateText, { backgroundColor: isDark ? '#2D3748' : '#E2E8F0' }]}>
-          {date === new Date().toLocaleDateString() ? todayText : 
-           date === new Date(Date.now() - 86400000).toLocaleDateString() ? yesterdayText : date}
-        </Text>
-      </View>
-    );
+  useEffect(() => {
+    fetchMessages();
+  }, [fetchMessages]);
 
-    return (
-      <View key={item.id}>
-        {showDate && renderDateSeparator(formatDate(new Date(item.timestamp)))}
-        
-        <View 
-          style={[
-            styles.messageContainer, 
-            isUser ? styles.userMessageContainer : styles.seniorMessageContainer
-          ]}
-        >
-          {!isUser && showAvatar && (
+  // Helpers
+  const formatTime = useCallback((date: Date) => dayjs(date).format('h:mm A'), []);
+  const formatDateHeader = useCallback(
+    (date: Date) => {
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      if (dayjs(date).isSame(today, 'day')) return strings.today;
+      if (dayjs(date).isSame(yesterday, 'day')) return strings.yesterday;
+      return dayjs(date).format('MMMM D, YYYY');
+    },
+    [strings.today, strings.yesterday]
+  );
+
+  // Group messages by date (memoized)
+  const groupedMessages = useMemo(() => {
+    const groups: { [key: string]: Message[] } = {};
+    messages.forEach((msg) => {
+      const key = dayjs(msg.timestamp).format('YYYY-MM-DD');
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(msg);
+    });
+    // Sort dates descending (older first or as you prefer)
+    const entries = Object.entries(groups).sort((a, b) => dayjs(a[0]).unix() - dayjs(b[0]).unix());
+    return entries.map(([date, msgs]) => ({ date: new Date(date), messages: msgs }));
+  }, [messages]);
+
+  // Send message handler
+  const handleSendMessage = useCallback(async () => {
+    if (!newMessage.trim() || isSending) return;
+    const text = newMessage.trim();
+    setNewMessage('');
+    setIsSending(true);
+
+    // optimistic add
+    const tempId = `temp-${Date.now()}`;
+    const optimistic: Message = { id: tempId, text, sender: 'user', timestamp: new Date(), read: true };
+    setMessages((p) => [...p, optimistic]);
+
+    try {
+      // simulate network
+      await new Promise((r) => setTimeout(r, 500));
+      // replace temp id
+      setMessages((p) => p.map((m) => (m.id === tempId ? { ...m, id: Date.now().toString() } : m)));
+
+      // simulate reply
+      setIsTyping(true);
+      setTimeout(() => {
+        const reply: Message = {
+          id: Date.now().toString(),
+          text: t("Thanks for your message! I'll get back to you soon.") || "Thanks for your message! I'll get back to you soon.",
+          sender: 'senior',
+          timestamp: new Date(),
+          read: true,
+        };
+        setMessages((p) => [...p, reply]);
+        setIsTyping(false);
+      }, 1200);
+    } catch (err) {
+      console.error('Send failed:', err);
+      setNewMessage(text); // restore to allow retry
+      Alert.alert(strings.error, strings.failedToSend);
+    } finally {
+      setIsSending(false);
+    }
+  }, [newMessage, isSending, t, strings.error, strings.failedToSend]);
+
+  // Render single message (uses the group's messages array to decide avatar suppression)
+  const renderMessageItem = useCallback(
+    (message: Message, index: number, groupMessages: Message[]) => {
+      const isUser = message.sender === 'user';
+      const prev = index > 0 ? groupMessages[index - 1] : null;
+      const showAvatar = !isUser && (!prev || prev.sender !== message.sender || dayjs(message.timestamp).diff(prev.timestamp, 'minute') > 5);
+
+      return (
+        <View key={message.id} style={[styles.messageContainer, isUser ? styles.userMessageContainer : styles.seniorMessageContainer]}>
+          {!isUser && showAvatar ? (
             senior?.avatar ? (
-              <Image 
-                source={{ uri: senior.avatar }} 
-                style={styles.avatar} 
-              />
+              <Image source={{ uri: senior.avatar }} style={styles.avatar} />
             ) : (
-              <View style={[styles.avatar, { backgroundColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' }]}>
-                <Ionicons name="person" size={24} color="#718096" />
+              <View style={[styles.avatar, { backgroundColor: isDark ? '#374151' : '#E2E8F0', justifyContent: 'center', alignItems: 'center' }]}>
+                <Ionicons name="person" size={18} color={tertiaryText} />
               </View>
             )
+          ) : (
+            !isUser && <View style={{ width: 40 }} />
           )}
-          
-          <View 
+
+          <View
             style={[
               styles.messageBubble,
-              isUser 
-                ? { 
-                    backgroundColor: isDark ? '#2F855A' : '#38A169',
-                    borderTopRightRadius: 4,
-                    marginLeft: 'auto',
-                  }
-                : { 
-                    backgroundColor: isDark ? '#2D3748' : '#E2E8F0',
-                    borderTopLeftRadius: 4,
-                    marginRight: 'auto',
-                  },
-              !showAvatar && isUser && { marginLeft: 48 },
-              !showAvatar && !isUser && { marginRight: 48 },
+              {
+                backgroundColor: isUser ? primaryColor : cardColor,
+                marginLeft: isUser ? 40 : 0,
+                marginRight: isUser ? 0 : 40,
+                maxWidth: width * 0.75,
+              },
+              isUser ? styles.userBubble : styles.seniorBubble,
             ]}
           >
-            <Text 
-              style={[
-                styles.messageText,
-                isUser 
-                  ? { color: '#FFFFFF' } 
-                  : { color: isDark ? '#E2E8F0' : '#1A202C' }
-              ]}
-            >
-              {item.text}
-            </Text>
+            <Text style={[styles.messageText, { color: isUser ? '#fff' : textColor }]}>{message.text}</Text>
+
             <View style={styles.messageTimeContainer}>
-              <Text 
-                style={[
-                  styles.messageTime,
-                  isUser 
-                    ? { color: 'rgba(255, 255, 255, 0.7)' } 
-                    : { color: isDark ? 'rgba(160, 174, 192, 0.7)' : 'rgba(113, 128, 150, 0.7)' }
-                ]}
-              >
-                {formatTime(new Date(item.timestamp))}
-              </Text>
+              <Text style={[styles.messageTime, { color: isUser ? 'rgba(255,255,255,0.8)' : tertiaryText }]}>{formatTime(message.timestamp)}</Text>
               {isUser && (
-                <Ionicons 
-                  name={item.read ? 'checkmark-done' : 'checkmark'} 
-                  size={16} 
-                  color={item.read ? '#63B3ED' : 'rgba(255, 255, 255, 0.7)'} 
-                  style={styles.readIcon} 
-                />
+                <MaterialIcons name={message.read ? 'done-all' : 'done'} size={14} color={message.read ? '#86EFAC' : 'rgba(255,255,255,0.7)'} style={{ marginLeft: 6 }} />
               )}
             </View>
           </View>
-          
-          {isUser && showAvatar && (
-            <View style={[styles.avatar, { backgroundColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' }]}>
-              <Ionicons name="person" size={24} color="#718096" />
-            </View>
-          )}
         </View>
-      </View>
-    );
-  };
+      );
+    },
+    [senior, isDark, tertiaryText, primaryColor, cardColor, width, textColor, formatTime]
+  );
 
-  const renderTypingIndicator = () => {
-    if (!isTyping) return null;
-    
+  // Loading state
+  if (isLoading) {
     return (
-      <View style={[styles.messageContainer, styles.seniorMessageContainer]}>
-        <View style={[styles.avatar, { backgroundColor: isDark ? '#2D3748' : '#E2E8F0', justifyContent: 'center', alignItems: 'center' }]}>
-          <Ionicons name="person" size={24} color={isDark ? '#A0AEC0' : '#718096'} />
-        </View>
-        <View style={[styles.typingBubble, { backgroundColor: isDark ? '#2D3748' : '#E2E8F0' }]}>
-          <View style={[styles.typingDot, { backgroundColor: isDark ? '#A0AEC0' : '#718096' }]} />
-          <View style={[styles.typingDot, { marginHorizontal: 4, backgroundColor: isDark ? '#A0AEC0' : '#718096' }]} />
-          <View style={[styles.typingDot, { backgroundColor: isDark ? '#A0AEC0' : '#718096' }]} />
-        </View>
-      </View>
-    );
-  };
-
-  if (loading) {
-    return (
-      <View style={[styles.loadingContainer, { backgroundColor: isDark ? '#171923' : '#FFFBEF' }]}>
-        <ActivityIndicator size="large" color={isDark ? '#48BB78' : '#2F855A'} />
-      </View>
-    );
-  }
-
-  if (!senior) {
-    return (
-      <View style={[styles.errorContainer, { backgroundColor: isDark ? '#171923' : '#FFFBEF' }]}>
-        <Ionicons name="warning" size={48} color={isDark ? '#E53E3E' : '#C53030'} />
-        <Text style={[styles.errorText, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-          {errorLoadingText}
-        </Text>
-        <TouchableOpacity 
-          style={[styles.retryButton, { backgroundColor: isDark ? '#2D3748' : '#E2E8F0' }]}
-          onPress={() => setLoading(true)}
-        >
-          <Text style={[styles.retryButtonText, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-            {retryText}
-          </Text>
-        </TouchableOpacity>
+      <View style={[styles.loadingContainer, { backgroundColor: bgColor }]}>
+        <ActivityIndicator size="large" color={primaryColor} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: isDark ? '#171923' : '#FFFBEF' }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: bgColor }]}>
       {/* Header */}
-      <View style={[styles.header, { borderBottomColor: isDark ? '#2D3748' : '#E2E8F0' }]}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity 
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-          >
-            <Ionicons 
-              name="arrow-back" 
-              size={24} 
-              color={isDark ? '#E2E8F0' : '#1A202C'} 
-            />
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.userInfo}
-            onPress={() => navigation.navigate('SeniorDetail', { seniorId: senior.id })}
-          >
-            {senior.avatar ? (
-              <Image 
-                source={{ uri: senior.avatar }} 
-                style={styles.headerAvatar} 
-              />
-            ) : (
-              <View style={[styles.headerAvatar, { backgroundColor: '#E2E8F0', justifyContent: 'center', alignItems: 'center' }]}>
-                <Ionicons name="person" size={28} color="#718096" />
-              </View>
-            )}
-            <View>
-              <Text style={[styles.userName, { color: isDark ? '#E2E8F0' : '#1A202C' }]}>
-                {senior.name}
-              </Text>
-              <View style={styles.statusContainer}>
-                <View 
-                  style={[
-                    styles.statusDot,
-                    { 
-                      backgroundColor: senior.status === 'online' 
-                        ? '#48BB78' 
-                        : senior.status === 'alert' 
-                          ? '#E53E3E' 
-                          : '#A0AEC0',
-                    }
-                  ]} 
-                />
-                <Text style={[styles.statusText, { color: isDark ? '#A0AEC0' : '#718096' }]}>
-                  {senior.status === 'online' 
-                    ? onlineText 
-                    : senior.status === 'alert' 
-                      ? alertText 
-                      : offlineText}
-                </Text>
-              </View>
+      <View style={[styles.header, { borderBottomColor: borderColor }]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+          <Ionicons name="arrow-back" size={22} color={textColor} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.headerContent}
+          onPress={() => navigation.navigate('SeniorDetail', { seniorId: senior?.id || '' })}
+        >
+          {senior?.avatar ? (
+            <Image source={{ uri: senior.avatar }} style={styles.headerAvatar} />
+          ) : (
+            <View style={[styles.headerAvatar, { backgroundColor: isDark ? '#374151' : '#E2E8F0', justifyContent: 'center', alignItems: 'center' }]}>
+              <Ionicons name="person" size={20} color={tertiaryText} />
             </View>
-          </TouchableOpacity>
-        </View>
-        
+          )}
+          <View style={{ marginLeft: 10 }}>
+            <Text style={[styles.userName, { color: textColor }]}>{senior?.name}</Text>
+            <View style={styles.statusContainer}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor: senior?.status === 'online' ? '#10B981' : senior?.status === 'alert' ? '#EF4444' : '#9CA3AF',
+                  },
+                ]}
+              />
+              <Text style={[styles.statusText, { color: tertiaryText }]}>
+                {senior?.status === 'online' ? strings.online : senior?.status === 'alert' ? strings.needsAttention : strings.offline}
+              </Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+
         <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.headerButton}>
-            <Ionicons 
-              name="call" 
-              size={22} 
-              color={isDark ? '#E2E8F0' : '#1A202C'} 
-            />
+          <TouchableOpacity style={styles.headerIconButton}>
+            <Ionicons name="call" size={20} color={textColor} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.headerButton}>
-            <Ionicons 
-              name="videocam" 
-              size={22} 
-              color={isDark ? '#E2E8F0' : '#1A202C'} 
-            />
+          <TouchableOpacity style={styles.headerIconButton}>
+            <Ionicons name="videocam" size={20} color={textColor} />
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Messages */}
-      <View style={styles.messagesContainer}>
-        {messages.length === 0 ? (
+      {/* Messages list grouped by date */}
+      <FlatList
+        data={groupedMessages}
+        keyExtractor={(g) => g.date.toISOString()}
+        contentContainerStyle={styles.messagesList}
+        renderItem={({ item: group }) => (
+          <View key={group.date.toISOString()}>
+            <View style={styles.dateHeaderContainer}>
+              <Text style={[styles.dateHeader, { backgroundColor: cardColor, color: tertiaryText }]}>{formatDateHeader(group.date)}</Text>
+            </View>
+
+            {group.messages.map((m, idx) => renderMessageItem(m, idx, group.messages))}
+          </View>
+        )}
+        ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Ionicons 
-              name="chatbubbles" 
-              size={64} 
-              color={isDark ? '#4A5568' : '#A0AEC0'} 
-            />
-            <Text style={[styles.emptyText, { color: isDark ? '#A0AEC0' : '#718096' }]}>
-              {emptyMessagesText}
-            </Text>
-            <Text style={[styles.emptySubtext, { color: isDark ? '#718096' : '#A0AEC0' }]}>
-              {startConversationText.replace('{name}', senior.name)}
+            <MaterialCommunityIcons name="message-text-outline" size={64} color={tertiaryText} />
+            <Text style={[styles.emptyText, { color: tertiaryText }]}>{strings.noMessages}</Text>
+            <Text style={[styles.emptySubtext, { color: tertiaryText, opacity: 0.7 }]}>
+              {strings.startConversation.replace('{name}', senior?.name || strings.them)}
             </Text>
           </View>
-        ) : (
-          <FlatList
-            data={messages}
-            renderItem={renderMessage}
-            keyExtractor={item => item.id}
-            contentContainerStyle={styles.messagesList}
-            inverted={false}
-            showsVerticalScrollIndicator={false}
-            ListFooterComponent={renderTypingIndicator}
-          />
-        )}
-      </View>
+        }
+      />
 
-      {/* Message Input */}
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-      >
-        <View style={[styles.inputContainer, { backgroundColor: isDark ? '#1A202C' : '#FFFFFF' }]}>
+      {/* Typing indicator */}
+      {isTyping && (
+        <View style={styles.typingContainer}>
+          <View style={[styles.typingBubble, { backgroundColor: cardColor }]}>
+            <View style={[styles.typingDot, { backgroundColor: tertiaryText }]} />
+            <View style={[styles.typingDot, { backgroundColor: tertiaryText, marginHorizontal: 6 }]} />
+            <View style={[styles.typingDot, { backgroundColor: tertiaryText }]} />
+          </View>
+        </View>
+      )}
+
+      {/* Input */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+        <View style={[styles.inputContainer, { borderTopColor: borderColor, backgroundColor: cardColor }]}>
           <TouchableOpacity style={styles.attachmentButton}>
-            <Ionicons 
-              name="attach" 
-              size={24} 
-              color={isDark ? '#A0AEC0' : '#718096'} 
-            />
+            <Ionicons name="attach" size={22} color={tertiaryText} />
           </TouchableOpacity>
-          
+
           <TextInput
-            style={[
-              styles.input,
-              { 
-                backgroundColor: isDark ? '#2D3748' : '#F7FAFC',
-                color: isDark ? '#E2E8F0' : '#1A202C',
-              }
-            ]}
-            placeholder={typeMessageText}
-            placeholderTextColor={isDark ? '#718096' : '#A0AEC0'}
+            style={[styles.input, { backgroundColor: inputBg, color: inputText, borderColor }]}
+            placeholder={strings.typeMessage}
+            placeholderTextColor={tertiaryText}
             value={newMessage}
             onChangeText={setNewMessage}
             multiline
           />
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={[
               styles.sendButton,
-              { 
-                backgroundColor: newMessage.trim() ? (isDark ? '#48BB78' : '#38A169') : (isDark ? '#2D3748' : '#E2E8F0'),
-                opacity: newMessage.trim() ? 1 : 0.7,
-              }
+              { backgroundColor: newMessage.trim() ? primaryColor : tertiaryText, opacity: newMessage.trim() ? 1 : 0.6 },
             ]}
             onPress={handleSendMessage}
-            disabled={!newMessage.trim()}
+            disabled={!newMessage.trim() || isSending}
           >
-            <Ionicons 
-              name="send" 
-              size={20} 
-              color={newMessage.trim() ? '#FFFFFF' : (isDark ? '#A0AEC0' : '#718096')} 
-            />
+            <Ionicons name="send" size={18} color="#fff" />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -494,218 +416,60 @@ const MessagesScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFBEF',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  errorText: {
-    fontSize: 16,
-    marginTop: 16,
-    textAlign: 'center',
-    color: '#1A202C',
-  },
-  retryButton: {
-    marginTop: 20,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  retryButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  backButton: {
-    padding: 8,
-    marginRight: 8,
-  },
-  userInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  headerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 12,
-  },
-  userName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1A202C',
-  },
-  statusContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 2,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 4,
-  },
-  statusText: {
-    fontSize: 12,
-    color: '#718096',
-  },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerButton: {
-    padding: 8,
-    marginLeft: 8,
-  },
-  messagesContainer: {
-    flex: 1,
-    paddingHorizontal: 12,
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 40,
-  },
-  emptyText: {
-    fontSize: 16,
-    marginTop: 16,
-    textAlign: 'center',
-    color: '#718096',
-  },
-  emptySubtext: {
-    fontSize: 14,
-    marginTop: 8,
-    textAlign: 'center',
-    color: '#A0AEC0',
-  },
-  messagesList: {
-    paddingTop: 16,
-    paddingBottom: 16,
-  },
-  messageContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    marginBottom: 8,
-    maxWidth: '80%',
-  },
-  userMessageContainer: {
-    alignSelf: 'flex-end',
-  },
-  seniorMessageContainer: {
-    alignSelf: 'flex-start',
-  },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    marginRight: 8,
-  },
-  messageBubble: {
-    padding: 12,
-    borderRadius: 16,
-    marginBottom: 4,
-    maxWidth: '100%',
-  },
-  messageText: {
-    fontSize: 16,
-    lineHeight: 22,
-  },
-  messageTimeContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-    alignSelf: 'flex-end',
-  },
-  messageTime: {
-    fontSize: 10,
-    color: 'rgba(113, 128, 150, 0.7)',
-  },
-  readIcon: {
-    marginLeft: 4,
-  },
-  typingBubble: {
-    flexDirection: 'row',
-    padding: 12,
-    borderRadius: 16,
-    marginBottom: 4,
-    marginLeft: 8,
-  },
-  typingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  dateSeparator: {
-    alignItems: 'center',
-    marginVertical: 16,
-  },
-  dateText: {
-    fontSize: 12,
-    color: '#718096',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
+  container: { flex: 1 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  header: { flexDirection: 'row', alignItems: 'center', padding: 12, borderBottomWidth: 1 },
+  backButton: { padding: 8 },
+  headerContent: { flexDirection: 'row', alignItems: 'center', flex: 1, marginLeft: 8 },
+  headerAvatar: { width: 44, height: 44, borderRadius: 22 },
+  userName: { fontSize: 16, fontWeight: '600' },
+  statusContainer: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+  statusText: { fontSize: 12 },
+  headerRight: { flexDirection: 'row', alignItems: 'center' },
+  headerIconButton: { padding: 8, marginLeft: 8 },
+
+  messagesList: { paddingHorizontal: 12, paddingBottom: 12 },
+  dateHeaderContainer: { alignItems: 'center', marginVertical: 12 },
+  dateHeader: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, fontSize: 12, fontWeight: '500' },
+
+  messageContainer: { marginBottom: 8, flexDirection: 'row', alignItems: 'flex-end' },
+  userMessageContainer: { justifyContent: 'flex-end' },
+  seniorMessageContainer: { justifyContent: 'flex-start' },
+
+  avatar: { width: 36, height: 36, borderRadius: 18, marginRight: 8 },
+  messageBubble: { padding: 10, borderRadius: 14 },
+  userBubble: { borderTopRightRadius: 6, borderBottomLeftRadius: 14, borderBottomRightRadius: 14 },
+  seniorBubble: { borderTopLeftRadius: 6, borderBottomRightRadius: 14, borderBottomLeftRadius: 14 },
+  messageText: { fontSize: 16, lineHeight: 20 },
+  messageTimeContainer: { flexDirection: 'row', alignItems: 'center', marginTop: 6, justifyContent: 'flex-end' },
+  messageTime: { fontSize: 10 },
+
+  typingContainer: { paddingHorizontal: 16, marginBottom: 8 },
+  typingBubble: { padding: 10, borderRadius: 16, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center' },
+  typingDot: { width: 6, height: 6, borderRadius: 3, opacity: 0.8, marginHorizontal: 2 },
+
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
+  emptyText: { fontSize: 18, fontWeight: '600', marginTop: 12 },
+  emptySubtext: { fontSize: 14, marginTop: 8 },
+
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 8,
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF',
   },
-  attachmentButton: {
-    padding: 8,
-    marginRight: 8,
-  },
+  attachmentButton: { padding: 8, marginRight: 8 },
   input: {
     flex: 1,
     minHeight: 40,
-    maxHeight: 120,
-    paddingHorizontal: 16,
+    maxHeight: 140,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
     fontSize: 16,
-    backgroundColor: '#F7FAFC',
   },
-  sendButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
+  sendButton: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
 });
 
 export default MessagesScreen;

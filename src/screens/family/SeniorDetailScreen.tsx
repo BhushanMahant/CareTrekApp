@@ -104,21 +104,51 @@ const SeniorDetailScreen = () => {
         // Simulate API call
         await new Promise(resolve => setTimeout(resolve, 800));
         
-        const status: 'online' | 'offline' | 'alert' = route.params.seniorId === '1' ? 'online' : 'alert';
+        // Define the mock data for each senior with proper typing
+        type SeniorStatus = 'online' | 'offline' | 'alert';
+        interface SeniorData {
+          name: string;
+          status: SeniorStatus;
+          lastActive: string;
+          avatar: string;
+          heartRate: number;
+          oxygen: number;
+          steps: number;
+          battery: number;
+          location: string;
+        }
+
+        const seniorsData: Record<string, SeniorData> = {
+          '1': {
+            name: 'Bhushan Mahant',
+            status: 'online',
+            lastActive: '10 min ago',
+            avatar: '',
+            heartRate: 68,
+            oxygen: 97,
+            steps: 5234,
+            battery: 92,
+            location: '789 Pine Rd, Anytown, USA',
+          },
+          '2': {
+            name: 'Aditi Lanjewar',
+            status: 'offline',
+            lastActive: '1 hour ago',
+            avatar: '',
+            heartRate: 75,
+            oxygen: 96,
+            steps: 2890,
+            battery: 23,
+            location: '321 Maple Dr, Somewhere, USA',
+          }
+        };
+
+        // Get the senior data based on the ID, or use the first senior as default
+        const seniorData = seniorsData[route.params.seniorId] || Object.values(seniorsData)[0];
         
         const mockData = {
           id: route.params.seniorId,
-          name: route.params.seniorId === '1' ? 'Ramesh Patel' : 'Sunita Sharma',
-          status: status,
-          lastActive: route.params.seniorId === '1' ? '2 min ago' : '5 min ago',
-          avatar: route.params.seniorId === '1' 
-            ? 'https://randomuser.me/api/portraits/men/1.jpg' 
-            : 'https://randomuser.me/api/portraits/women/1.jpg',
-          heartRate: route.params.seniorId === '1' ? 72 : 92,
-          oxygen: route.params.seniorId === '1' ? 98 : 94,
-          steps: route.params.seniorId === '1' ? 3421 : 1245,
-          battery: 78,
-          location: '123 Main St, Anytown, USA',
+          ...seniorData
         };
         
         setSenior(mockData);

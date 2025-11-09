@@ -60,23 +60,23 @@ const SeniorsListScreen = () => {
       const mockData: Senior[] = [
         {
           id: '1',
-          name: 'John Doe',
+          name: 'Bhushan Mahant',
           status: 'online',
           lastActive: '2 min ago',
-          avatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-          heartRate: 72,
-          oxygen: 98,
-          steps: 3421
+          avatar: 'https://randomuser.me/api/portraits/men/42.jpg',
+          heartRate: 75,
+          oxygen: 97,
+          steps: 4280
         },
         {
           id: '2',
-          name: 'Jane Smith',
+          name: 'Aditi Lanjewar',
           status: 'alert',
           lastActive: '5 min ago',
-          avatar: 'https://randomuser.me/api/portraits/women/1.jpg',
-          heartRate: 92,
-          oxygen: 94,
-          steps: 1245
+          avatar: 'https://randomuser.me/api/portraits/women/42.jpg',
+          heartRate: 88,
+          oxygen: 95,
+          steps: 3560
         },
       ];
       setSeniors(mockData);
